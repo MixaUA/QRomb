@@ -40,7 +40,7 @@
   .final-result .label { font-size: 11px; color: rgba(255,255,255,0.6); text-transform: uppercase; margin-bottom: 4px; }
   .capacity-note { font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 6px; }
   
-  /* ЗАЛІЗОБЕТОННЕ КЕРУВАННЯ ШАРАМИ КАМЕРИ ТА ГІДА */
+  /* ПРИНЦИП ВИВОДУ КАМЕРИ З РОБОЧОГО ПРОЄКТУ */
   .cam-wrap { 
     position: relative; 
     width: 100%; 
@@ -52,24 +52,25 @@
     overflow: hidden; 
   }
   .cam-wrap video { 
-    display: block;
     position: absolute; 
-    top: 0; 
-    left: 0; 
-    width: 100%; 
-    height: 100%; 
+    top: 50%; 
+    left: 50%; 
+    min-width: 100%; 
+    min-height: 100%; 
+    width: auto; 
+    height: auto; 
+    transform: translate(-50%, -50%); 
     object-fit: cover;
     z-index: 1;
   }
   .cam-wrap canvas.guide { 
-    display: block;
     position: absolute; 
     top: 0; 
     left: 0; 
     width: 100%; 
     height: 100%; 
     pointer-events: none; 
-    z-index: 10; /* Стовідсотково над відеопотоком */
+    z-index: 10; 
   }
   .warn-note { font-size: 12px; color: #ffcf7f; margin-top: 6px; }
 </style>
@@ -77,7 +78,7 @@
 <body>
 <div class="wrap">
   <h1>Тест щільності: ромб-вишиванка</h1>
-  <div class="subtitle">Симуляція photo телефоном — перевіряємо, чи виживає сітка при розмитті / шумі / нерівному світлі</div>
+  <div class="subtitle">Симуляція фото телефоном — перевіряємо, чи виживає сітка при розмитті / шумі / нерівному світлі</div>
 
   <div class="panel">
     <label>Фраза (укр. літери, пробіл, кома, крапка)</label>
@@ -293,7 +294,6 @@ function runTest() {
   const cctx = cleanCanvas.getContext('2d');
   drawPattern(cctx, cleanCanvas.width, cleanCanvas.height, Q, groundTruth, 0, 0, quadMap);
 
-  // ДОДАНО ОПТИМІЗАЦІЮ ТУТ ДЛЯ СИМУЛЯЦІЙНОГО КАНВАСУ
   const pctx = photoCanvas.getContext('2d', { willReadFrequently: true });
   const actualRot = (Math.random() * 2 - 1) * rotErr;
   drawPattern(pctx, photoCanvas.width, photoCanvas.height, Q, groundTruth, actualRot, blurAmt, quadMap);
@@ -326,7 +326,7 @@ function runTest() {
   }
 
   let html = '';
-  html += `<div style="margin-bottom:8px;color:rgba(255,255,255,0.6)">Фраза: ${charCount} symbols → ${bits.length} bits (capacity: ${capacity})</div>`;
+  html += `<div style="margin-bottom:8px;color:rgba(255,255,255,0.6)">Фраза: ${charCount} символів → ${bits.length} біт (місткість сектора: ${capacity} біт)</div>`;
   for (let q = 0; q < 4; q++) {
     const acc = accuracy(quadReadings[q]);
     const text = bitsToPhrase(quadReadings[q]);
@@ -525,7 +525,7 @@ function readQuadrants(ctx, W, H, Q, rotDeg, quadMap) {
 }
 
 // =====================================================================
-// РЕАЛЬНА КАМЕРА (ВЕБ API)
+// РЕАЛЬНА КАМЕРА (ПРИНЦИП ІНІЦІАЛІЗАЦІЇ З CAM DISC SCANNER)
 // =====================================================================
 let camStream = null;
 
@@ -544,12 +544,17 @@ async function startCamera() {
   
   status.textContent = 'Запит доступу до камери...';
   
+  const constraints = {
+    video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 640 } },
+    audio: false
+  };
+  
   try {
-    camStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 720 }, height: { ideal: 720 } }
-    });
-    
+    camStream = await navigator.mediaDevices.getUserMedia(constraints);
     video.srcObject = camStream;
+    video.setAttribute('playsinline', true);
+    
+    // Прямий, надійний запуск без очікування metadata
     await video.play();
     
     btn.textContent = 'Вимкнути камеру';
@@ -570,7 +575,7 @@ function stopCamera() {
     camStream.getTracks().forEach(track => track.stop());
     camStream = null;
   }
-  video.srcObject = null;
+  if (video) video.srcObject = null;
   btn.textContent = 'Увімкнути камеру';
   status.textContent = 'Камера вимкнена.';
   
@@ -634,7 +639,7 @@ function captureAndDecode() {
 
   const size = wrap.clientWidth || 320;
   
-  // КРИТИЧНА ОПТИМІЗАЦІЯ ДЛЯ МОБІЛЬНИХ БРАУЗЕРІВ ТУТ
+  // willReadFrequently оптимізовані контексти
   const captureCanvas = document.createElement('canvas');
   captureCanvas.width = size; captureCanvas.height = size;
   const cctx = captureCanvas.getContext('2d', { willReadFrequently: true });
@@ -654,8 +659,6 @@ function captureAndDecode() {
   const fullExtent = (squareSize + 2 * (off + CELL)) * Math.SQRT2;
 
   const nativeSize = Math.ceil(fullExtent);
-  
-  // КРИТИЧНА ОПТИМІЗАЦІЯ ДЛЯ МОБІЛЬНИХ БРАУЗЕРІВ ТУТ ТАКОЖ
   const scaledCanvas = document.createElement('canvas');
   scaledCanvas.width = nativeSize; scaledCanvas.height = nativeSize;
   const sctx = scaledCanvas.getContext('2d', { willReadFrequently: true });
