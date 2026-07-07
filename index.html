@@ -28,7 +28,17 @@
   .row .val { width: 44px; text-align: right; font-family: monospace; font-size: 12px; }
   button { width: 100%; padding: 12px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.6); background: transparent; color: #fff; font-size: 14px; cursor: pointer; }
   button:hover { background: rgba(255,255,255,0.1); }
-  canvas { display: block; margin: 0 auto; background: #08304f; border-radius: 8px; max-width: 100%; height: auto; }
+  
+  /* ПРОЗОРА ПІДКЛАДКА ДЛЯ ВСІХ КАНВАСІВ */
+  canvas { 
+    display: block; 
+    margin: 0 auto; 
+    background: transparent; 
+    border-radius: 8px; 
+    max-width: 100%; 
+    height: auto; 
+  }
+  
   .canvases { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin: 14px 0; }
   .canvas-box { text-align: center; }
   .canvas-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(255,255,255,0.5); margin-top: 6px; }
@@ -40,7 +50,7 @@
   .final-result .label { font-size: 11px; color: rgba(255,255,255,0.6); text-transform: uppercase; margin-bottom: 4px; }
   .capacity-note { font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 6px; }
   
-  /* ПРИНЦИП ВИВОДУ КАМЕРИ З РОБОЧОГО ПРОЄКТУ */
+  /* СТАБІЛЬНИЙ КВАДРАТНИЙ КОНТЕЙНЕР ДЛЯ КАМЕРИ ТА КАНВАСУ-ПЛЕЄРА */
   .cam-wrap { 
     position: relative; 
     width: 100%; 
@@ -51,28 +61,62 @@
     border-radius: 8px; 
     overflow: hidden; 
   }
+  
+  /* Відео ховаємо супер-безпечним методом без display:none, щоб iOS ніколи не ставила його на паузу */
   .cam-wrap video { 
     position: absolute; 
-    top: 50%; 
-    left: 50%; 
-    min-width: 100%; 
-    min-height: 100%; 
-    width: auto; 
-    height: auto; 
-    transform: translate(-50%, -50%); 
-    object-fit: cover;
-    z-index: 1;
+    top: 0;
+    left: 0;
+    width: 1px; 
+    height: 1px; 
+    opacity: 0.01;
+    pointer-events: none;
+    z-index: -1;
   }
+  
+  /* Цей канвас тепер виводить і відеопотік, і гід-сітку одночасно */
   .cam-wrap canvas.guide { 
     position: absolute; 
     top: 0; 
     left: 0; 
     width: 100%; 
     height: 100%; 
-    pointer-events: none; 
+    display: block;
     z-index: 10; 
   }
   .warn-note { font-size: 12px; color: #ffcf7f; margin-top: 6px; }
+
+  /* СТИЛІ ДЛЯ ДЕБАГ-МОНІТОРУ */
+  .debug-terminal {
+    background: #021321;
+    border: 1px solid #00ffcc;
+    border-radius: 8px;
+    padding: 10px;
+    margin-top: 14px;
+  }
+  .debug-title {
+    font-size: 11px;
+    color: #00ffcc;
+    text-transform: uppercase;
+    font-weight: bold;
+    letter-spacing: 0.1em;
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .debug-textarea {
+    width: 100%;
+    height: 160px;
+    background: transparent;
+    border: none;
+    color: #66ff66;
+    font-family: monospace;
+    font-size: 11px;
+    resize: vertical;
+    outline: none;
+    line-height: 1.4;
+  }
 </style>
 </head>
 <body>
@@ -164,6 +208,16 @@
     <button style="margin-top:10px" id="toggleCamBtn" onclick="toggleCamera()">Увімкнути камеру</button>
     <button style="margin-top:8px" onclick="captureAndDecode()">Захопити кадр і декодувати</button>
     <div class="capacity-note" id="camStatus"></div>
+
+    <!-- ДЕБАГ-МОНІТОР ДЛЯ СКАНИРОВАНИХ ПОДІЙ -->
+    <div class="debug-terminal">
+      <div class="debug-title">
+        <span>Термінал діагностики камери</span>
+        <span style="color: #66ff66; cursor:pointer;" onclick="clearDebugLog()">Очистити</span>
+      </div>
+      <textarea id="debugMonitorBox" class="debug-textarea" readonly placeholder="Тут з'являться логи ініціалізації та декодування..."></textarea>
+      <button style="margin-top:8px; border-color:#00ffcc; color:#00ffcc; padding: 6px;" onclick="copyDebugLog()">Скопіювати дебаг-лог</button>
+    </div>
   </div>
 
   <div class="panel results" id="camResultsBox"></div>
@@ -173,6 +227,34 @@
 const LETTERS = ['а','б','в','г','ґ','д','е','є','ж','з','и','і','ї','й','к','л','м','н','о','п','р','с','т','у','ф','х','ц','ч','ш','щ','ь','ю','я'];
 const SYMBOLS = [' ', ',', '.'];
 const POLYBIUS = LETTERS.concat(SYMBOLS);
+
+// Функція логування дебагу
+function logDebug(msg) {
+  const box = document.getElementById('debugMonitorBox');
+  if (!box) return;
+  const now = new Date();
+  const time = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
+  box.value += `[${time}] ${msg}\n`;
+  box.scrollTop = box.scrollHeight;
+  console.log(`[DEB] ${msg}`);
+}
+
+function clearDebugLog() {
+  const box = document.getElementById('debugMonitorBox');
+  if (box) box.value = '';
+}
+
+function copyDebugLog() {
+  const box = document.getElementById('debugMonitorBox');
+  if (!box) return;
+  box.select();
+  navigator.clipboard.writeText(box.value)
+    .then(() => logDebug("Діагностичний лог скопійовано до буферу обміну."))
+    .catch(() => {
+      document.execCommand('copy');
+      logDebug("Діагностичний лог скопійовано (резервний метод).");
+    });
+}
 
 function charToBits(ch) {
   const idx = POLYBIUS.indexOf(ch);
@@ -251,7 +333,10 @@ function updateCapacityNote() {
 ['qSize','blurAmt','noiseAmt','lightAmt','rotErr'].forEach(id => {
   document.getElementById(id).addEventListener('input', (e) => {
     document.getElementById(id + 'Val').textContent = e.target.value;
-    if (id === 'qSize') { updateCapacityNote(); drawGuide(); }
+    if (id === 'qSize') { 
+      updateCapacityNote(); 
+      if (camStream) startCameraLoop(); 
+    }
   });
 });
 ['rotTL','rotTR','rotBL','rotBR'].forEach(id => {
@@ -467,6 +552,7 @@ function applyUnevenLight(ctx, W, H, amt) {
 }
 
 function readQuadrants(ctx, W, H, Q, rotDeg, quadMap) {
+  logDebug(`--- readQuadrants: Початок попіксельного аналізу кадру ${W}x${H} ---`);
   const img = ctx.getImageData(0, 0, W, H);
   const d = img.data;
   function lumAt(x, y) {
@@ -501,6 +587,7 @@ function readQuadrants(ctx, W, H, Q, rotDeg, quadMap) {
   let minL = 255, maxL = 0;
   for (const l of sampledLums) { if (l < minL) minL = l; if (l > maxL) maxL = l; }
   const threshold = (minL + maxL) / 2;
+  logDebug(`Діапазон яскравості: min=${minL.toFixed(1)}, max=${maxL.toFixed(1)}, Поріг=${threshold.toFixed(1)}`);
 
   const results = [[], [], [], []];
   for (let qy = 0; qy < 2; qy++) {
@@ -519,15 +606,17 @@ function readQuadrants(ctx, W, H, Q, rotDeg, quadMap) {
         }
       }
       results[qIdx] = bitsForQuad;
+      logDebug(`Квадрант [${qx},${qy}] (Реальний Сектор ${qIdx + 1}) зчитано бітів: ${bitsForQuad.join('')}`);
     }
   }
   return results;
 }
 
 // =====================================================================
-// РЕАЛЬНА КАМЕРА (ПРИНЦИП ІНІЦІАЛІЗАЦІЇ З CAM DISC SCANNER)
+// РЕАЛЬНА КАМЕРА (ПРИНЦИП ІНІЦІАЛІЗАЦІЇ З CAM DISC SCANNER ТА ОДНОКАНВАСНИЙ LOOP)
 // =====================================================================
 let camStream = null;
+let cameraLoopId = null;
 
 function toggleCamera() {
   if (camStream) {
@@ -542,60 +631,98 @@ async function startCamera() {
   const video = document.getElementById('camVideo');
   const btn = document.getElementById('toggleCamBtn');
   
+  logDebug("startCamera: Спроба ініціалізації камери...");
   status.textContent = 'Запит доступу до камери...';
   
-  const constraints = {
-    video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 640 } },
-    audio: false
-  };
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    logDebug("Помилка: navigator.mediaDevices.getUserMedia відсутній. Можливо не HTTPS з'єднання.");
+    status.textContent = 'Помилка: HTTPS необхідний для роботи камери!';
+    return;
+  }
   
   try {
-    camStream = await navigator.mediaDevices.getUserMedia(constraints);
+    if (camStream) {
+      logDebug("Зупиняємо попередній стрім перед новим запуском.");
+      camStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Ідентичні налаштування як в робочому Cam Disc Scanner
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+      audio: false
+    });
+    logDebug("Стрім отримано успішно.");
+    
+    camStream.getVideoTracks().forEach((track, idx) => {
+      logDebug(`Трек камери [${idx}]: ${track.label} (Статус: ${track.enabled ? 'Enabled' : 'Disabled'})`);
+      try {
+        const s = track.getSettings();
+        logDebug(`Апаратні параметри треку: ${s.width}x${s.height} @ ${s.frameRate}fps`);
+      } catch(se) {
+        logDebug(`Не вдалося зчитати settings треку: ${se.message}`);
+      }
+    });
+    
     video.srcObject = camStream;
     video.setAttribute('playsinline', true);
     
-    // Прямий, надійний запуск без очікування metadata
+    // Прямий та надійний запуск
+    logDebug("Виклик video.play()...");
     await video.play();
+    logDebug(`Плеєр грає. Роздільна здатність елемента <video>: ${video.videoWidth}x${video.videoHeight}`);
     
     btn.textContent = 'Вимкнути камеру';
     status.textContent = 'Камера увімкнена — вирівняй вишивку під пунктирний контур-гід і натисни "Захопити".';
-    drawGuide();
+    
+    // Запуск відмальовування в єдиний канвас у реальному часі
+    startCameraLoop();
   } catch (e) {
+    logDebug(`Критична помилка ініціалізації камери: ${e.message}\nСтек: ${e.stack}`);
     status.textContent = `Помилка камери: ${e.message}`;
     camStream = null;
   }
 }
 
-function stopCamera() {
+function startCameraLoop() {
+  if (cameraLoopId) cancelAnimationFrame(cameraLoopId);
+  
   const video = document.getElementById('camVideo');
-  const btn = document.getElementById('toggleCamBtn');
-  const status = document.getElementById('camStatus');
-  
-  if (camStream) {
-    camStream.getTracks().forEach(track => track.stop());
-    camStream = null;
-  }
-  if (video) video.srcObject = null;
-  btn.textContent = 'Увімкнути камеру';
-  status.textContent = 'Камера вимкнена.';
-  
-  const guideCanvas = document.getElementById('guideCanvas');
-  const gctx = guideCanvas.getContext('2d');
-  gctx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
-}
-
-function drawGuide() {
-  if (!camStream) return;
   const guideCanvas = document.getElementById('guideCanvas');
   const wrap = document.getElementById('camWrap');
-  const size = wrap.clientWidth || 320;
   
+  // Беремо поточний розмір контейнера
+  const size = wrap.clientWidth || 320;
   guideCanvas.width = size; 
   guideCanvas.height = size;
   
-  const gctx = guideCanvas.getContext('2d');
-  gctx.clearRect(0, 0, size, size);
+  const gctx = guideCanvas.getContext('2d', { willReadFrequently: true });
+  logDebug(`Запущено Camera Loop для канвасу розміром: ${size}x${size}`);
 
+  function tick() {
+    if (!camStream) return; // Зупиняємо якщо стрім вимкнено
+    
+    gctx.clearRect(0, 0, size, size);
+    
+    // 1. Малюємо поточний кадр з невидимого <video> на канвас
+    if (video.readyState >= 2) {
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (vw && vh) {
+        const sSize = Math.min(vw, vh);
+        const sx = (vw - sSize) / 2;
+        const sy = (vh - sSize) / 2;
+        gctx.drawImage(video, sx, sy, sSize, sSize, 0, 0, size, size);
+      }
+    }
+    
+    // 2. Зверху на той самий канвас накладаємо контур-гід (без додаткових шарів)
+    drawGuideOnContext(gctx, size);
+    
+    cameraLoopId = requestAnimationFrame(tick);
+  }
+  cameraLoopId = requestAnimationFrame(tick);
+}
+
+function drawGuideOnContext(gctx, size) {
   const Q = parseInt(document.getElementById('qSize').value) || 8;
   const squareSize = 2 * Q * CELL;
   const gap = CELL;
@@ -615,93 +742,151 @@ function drawGuide() {
   gctx.restore();
 }
 
-window.addEventListener('resize', drawGuide);
+function stopCamera() {
+  const video = document.getElementById('camVideo');
+  const btn = document.getElementById('toggleCamBtn');
+  const status = document.getElementById('camStatus');
+  
+  logDebug("stopCamera: Зупинка потоку камери...");
+  if (cameraLoopId) {
+    cancelAnimationFrame(cameraLoopId);
+    cameraLoopId = null;
+  }
+  if (camStream) {
+    camStream.getTracks().forEach(track => {
+      track.stop();
+      logDebug(`Трек ${track.label} зупинено.`);
+    });
+    camStream = null;
+  }
+  if (video) video.srcObject = null;
+  btn.textContent = 'Увімкнути камеру';
+  status.textContent = 'Камера вимкнена.';
+  
+  const guideCanvas = document.getElementById('guideCanvas');
+  const gctx = guideCanvas.getContext('2d');
+  gctx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
+}
+
+// При зміні розміру вікна оновлюємо розмір та стан циклу камери
+window.addEventListener('resize', () => {
+  if (camStream) {
+    startCameraLoop();
+  }
+});
 
 function captureAndDecode() {
+  logDebug("captureAndDecode: Запит на захоплення та декодування кадру...");
   const video = document.getElementById('camVideo');
   const wrap = document.getElementById('camWrap');
   const status = document.getElementById('camStatus');
 
   if (!camStream || video.paused) {
+    logDebug("Помилка: Стрім відсутній або відеоплеєр на паузі.");
     status.textContent = 'Спершу увімкни камеру і дочекайся зображення.';
     return;
   }
 
-  const Q = parseInt(document.getElementById('qSize').value);
-  const phrase = document.getElementById('phraseInput').value;
-  const quadMap = getQuadRotationMap();
-  const { bits, charCount } = encodePhrase(phrase);
-  const capacity = Q * Q;
-  const order = buildProximityOrder(Q);
-  const activeCount = Math.min(bits.length, capacity);
-  const groundTruth = new Array(capacity).fill(0);
-  for (let k = 0; k < activeCount; k++) groundTruth[order[k]] = bits[k];
+  try {
+    const Q = parseInt(document.getElementById('qSize').value);
+    const phrase = document.getElementById('phraseInput').value;
+    const quadMap = getQuadRotationMap();
+    const { bits, charCount } = encodePhrase(phrase);
+    const capacity = Q * Q;
+    const order = buildProximityOrder(Q);
+    const activeCount = Math.min(bits.length, capacity);
+    const groundTruth = new Array(capacity).fill(0);
+    for (let k = 0; k < activeCount; k++) groundTruth[order[k]] = bits[k];
 
-  const size = wrap.clientWidth || 320;
-  
-  // willReadFrequently оптимізовані контексти
-  const captureCanvas = document.createElement('canvas');
-  captureCanvas.width = size; captureCanvas.height = size;
-  const cctx = captureCanvas.getContext('2d', { willReadFrequently: true });
+    const size = wrap.clientWidth || 320;
+    
+    // Створюємо окремий чистий знімок з відео без накладених пунктирів гнучким методом
+    const captureCanvas = document.createElement('canvas');
+    captureCanvas.width = size; captureCanvas.height = size;
+    const cctx = captureCanvas.getContext('2d', { willReadFrequently: true });
 
-  const vw = video.videoWidth, vh = video.videoHeight;
-  if (vw && vh) {
-    const sSize = Math.min(vw, vh);
-    const sx = (vw - sSize) / 2, sy = (vh - sSize) / 2;
-    cctx.drawImage(video, sx, sy, sSize, sSize, 0, 0, size, size);
-  } else {
-    cctx.drawImage(video, 0, 0, size, size);
-  }
+    const vw = video.videoWidth, vh = video.videoHeight;
+    logDebug(`Ширина/Висота потоку <video> при захопленні: ${vw}x${vh}. readyState=${video.readyState}`);
 
-  const squareSize = 2 * Q * CELL;
-  const gap = CELL;
-  const off = gap + CELL / 2;
-  const fullExtent = (squareSize + 2 * (off + CELL)) * Math.SQRT2;
-
-  const nativeSize = Math.ceil(fullExtent);
-  const scaledCanvas = document.createElement('canvas');
-  scaledCanvas.width = nativeSize; scaledCanvas.height = nativeSize;
-  const sctx = scaledCanvas.getContext('2d', { willReadFrequently: true });
-  sctx.drawImage(captureCanvas, 0, 0, size, size, 0, 0, nativeSize, nativeSize);
-
-  const quadReadings = readQuadrants(sctx, nativeSize, nativeSize, Q, 0, quadMap);
-
-  const votedBits = new Array(capacity).fill(0);
-  for (let i = 0; i < capacity; i++) {
-    let sum = 0;
-    for (let q = 0; q < 4; q++) sum += quadReadings[q][i];
-    votedBits[i] = sum >= 2 ? 1 : 0;
-  }
-
-  function bitsToPhrase(arr) {
-    const seq = [];
-    for (let k = 0; k < activeCount; k++) seq.push(arr[order[k]]);
-    let out = '';
-    for (let i = 0; i + 5 < seq.length; i += 6) out += bitsToChar(seq.slice(i, i + 6));
-    return out;
-  }
-  function accuracy(arr) {
-    let correct = 0;
-    for (let k = 0; k < activeCount; k++) {
-      const g = order[k];
-      if (arr[g] === groundTruth[g]) correct++;
+    if (vw === 0 || vh === 0) {
+      logDebug("Помилка: Розміри відео дорівнюють нулю. Неможливо зчитати кадр.");
+      status.textContent = "Помилка камери: нульова роздільна здатність!";
+      return;
     }
-    return activeCount === 0 ? 100 : Math.round((correct / activeCount) * 100);
-  }
 
-  let html = '';
-  html += `<div style="margin-bottom:8px;color:rgba(255,255,255,0.6)">Реальний кадр — очікувана фраза: "${escapeHtml(phrase)}" (${bits.length} біт з ${capacity})</div>`;
-  for (let q = 0; q < 4; q++) {
-    const acc = accuracy(quadReadings[q]);
-    const text = bitsToPhrase(quadReadings[q]);
-    const cls = acc === 100 ? 'ok' : (acc >= 85 ? '' : 'bad');
-    html += `<div class="quad-line"><span>Сектор ${q + 1} (${acc}%)</span><span class="${cls}">"${escapeHtml(text)}"</span></div>`;
+    if (vw && vh) {
+      // Обрізаємо та центруємо зображення зі стріму в квадратний canvas
+      const sSize = Math.min(vw, vh);
+      const sx = (vw - sSize) / 2, sy = (vh - sSize) / 2;
+      logDebug(`Вирізаємо центральний квадрат: розмір ${sSize}x${sSize}, зсув sx=${sx.toFixed(1)}, sy=${sy.toFixed(1)}`);
+      cctx.drawImage(video, sx, sy, sSize, sSize, 0, 0, size, size);
+    } else {
+      logDebug("Попередження: Не вдалося отримати реальні розміри, малюємо на весь екран.");
+      cctx.drawImage(video, 0, 0, size, size);
+    }
+
+    const squareSize = 2 * Q * CELL;
+    const gap = CELL;
+    const off = gap + CELL / 2;
+    const fullExtent = (squareSize + 2 * (off + CELL)) * Math.SQRT2;
+
+    const nativeSize = Math.ceil(fullExtent);
+    logDebug(`Створення scaledCanvas: розрахунковий розмір nativeSize=${nativeSize}px`);
+    
+    const scaledCanvas = document.createElement('canvas');
+    scaledCanvas.width = nativeSize; scaledCanvas.height = nativeSize;
+    const sctx = scaledCanvas.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(captureCanvas, 0, 0, size, size, 0, 0, nativeSize, nativeSize);
+
+    // Виклик розпізнавання
+    const t0 = performance.now();
+    const quadReadings = readQuadrants(sctx, nativeSize, nativeSize, Q, 0, quadMap);
+    const t1 = performance.now();
+    logDebug(`readQuadrants успішно виконано за ${(t1 - t0).toFixed(1)} мс.`);
+
+    const votedBits = new Array(capacity).fill(0);
+    for (let i = 0; i < capacity; i++) {
+      let sum = 0;
+      for (let q = 0; q < 4; q++) sum += quadReadings[q][i];
+      votedBits[i] = sum >= 2 ? 1 : 0;
+    }
+
+    // Декодування результатів
+    function bitsToPhrase(arr) {
+      const seq = [];
+      for (let k = 0; k < activeCount; k++) seq.push(arr[order[k]]);
+      let out = '';
+      for (let i = 0; i + 5 < seq.length; i += 6) out += bitsToChar(seq.slice(i, i + 6));
+      return out;
+    }
+    function accuracy(arr) {
+      let correct = 0;
+      for (let k = 0; k < activeCount; k++) {
+        const g = order[k];
+        if (arr[g] === groundTruth[g]) correct++;
+      }
+      return activeCount === 0 ? 100 : Math.round((correct / activeCount) * 100);
+    }
+
+    let html = '';
+    html += `<div style="margin-bottom:8px;color:rgba(255,255,255,0.6)">Реальний кадр — очікувана фраза: "${escapeHtml(phrase)}" (${bits.length} біт з ${capacity})</div>`;
+    for (let q = 0; q < 4; q++) {
+      const acc = accuracy(quadReadings[q]);
+      const text = bitsToPhrase(quadReadings[q]);
+      const cls = acc === 100 ? 'ok' : (acc >= 85 ? '' : 'bad');
+      html += `<div class="quad-line"><span>Сектор ${q + 1} (${acc}%)</span><span class="${cls}">"${escapeHtml(text)}"</span></div>`;
+    }
+    const votedAcc = accuracy(votedBits);
+    const votedText = bitsToPhrase(votedBits);
+    html += `<div class="final-result"><div class="label">Голосування більшості (${votedAcc}% точності)</div>"${escapeHtml(votedText)}"</div>`;
+    document.getElementById('camResultsBox').innerHTML = html;
+    
+    status.textContent = `Кадр захоплено (${nativeSize}×${nativeSize}px, зумовано з ${size}×${size}px перегляду).`;
+    logDebug("captureAndDecode: Декодування кадру успішно завершено.");
+  } catch (err) {
+    logDebug(`Критична помилка всередині captureAndDecode: ${err.message}\nСтек: ${err.stack}`);
+    status.textContent = `Помилка обробки: ${err.message}`;
   }
-  const votedAcc = accuracy(votedBits);
-  const votedText = bitsToPhrase(votedBits);
-  html += `<div class="final-result"><div class="label">Голосування більшості (${votedAcc}% точності)</div>"${escapeHtml(votedText)}"</div>`;
-  document.getElementById('camResultsBox').innerHTML = html;
-  status.textContent = `Кадр захоплено (${nativeSize}×${nativeSize}px, зумовано з ${size}×${size}px перегляду).`;
 }
 
 runTest();
