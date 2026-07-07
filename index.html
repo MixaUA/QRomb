@@ -39,16 +39,45 @@
   .final-result { font-size: 18px; text-align: center; padding: 14px; margin-top: 10px; background: rgba(255,255,255,0.08); border-radius: 8px; }
   .final-result .label { font-size: 11px; color: rgba(255,255,255,0.6); text-transform: uppercase; margin-bottom: 4px; }
   .capacity-note { font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 6px; }
-  .cam-wrap { position: relative; width: 100%; max-width: 360px; margin: 0 auto; aspect-ratio: 1 / 1; background: #000; border-radius: 8px; overflow: hidden; }
-  .cam-wrap video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
-  .cam-wrap canvas.guide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+  
+  /* ЧІТКЕ КЕРУВАННЯ ШАРАМИ КАМЕРИ */
+  .cam-wrap { 
+    position: relative; 
+    width: 100%; 
+    max-width: 360px; 
+    margin: 0 auto; 
+    aspect-ratio: 1 / 1; 
+    background: #000; 
+    border-radius: 8px; 
+    overflow: hidden; 
+  }
+  .cam-wrap video { 
+    display: block;
+    position: absolute; 
+    top: 0; 
+    left: 0; 
+    width: 100%; 
+    height: 100%; 
+    object-fit: cover;
+    z-index: 1;
+  }
+  .cam-wrap canvas.guide { 
+    display: block;
+    position: absolute; 
+    top: 0; 
+    left: 0; 
+    width: 100%; 
+    height: 100%; 
+    pointer-events: none; 
+    z-index: 10; /* Гарантовано поверх відео */
+  }
   .warn-note { font-size: 12px; color: #ffcf7f; margin-top: 6px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Тест щільності: ромб-вишиванка</h1>
-  <div class="subtitle">Симуляція фото телефоном — перевіряємо, чи виживає сітка при розмитті / шумі / нерівному світлі</div>
+  <div class="subtitle">Симуляція photo телефоном — перевіряємо, чи виживає сітка при розмитті / шумі / нерівному світлі</div>
 
   <div class="panel">
     <label>Фраза (укр. літери, пробіл, кома, крапка)</label>
@@ -126,7 +155,7 @@
 
   <div class="panel">
     <label>Реальний тест через камеру</label>
-    <div class="warn-note">Це не автоматичний пошук ромба в довільному кадрі — вирівняй фізичну вишивку по пунктирному контуру-гіду вручну, так само як прицілюєшся под QR. Геометрія зчитування бере ту саму адаптивну калібрацію порогу, що й симуляція вище.</div>
+    <div class="warn-note">Це не автоматичний пошук ромба в довільному кадрі — вирівняй фізичну вишивку по пунктирному контуру-гіду вручну, так само як прицілюєшся під QR. Геометрія зчитування бере ту саму адаптивну калібрацію порогу, що й симуляція вище.</div>
     <div class="cam-wrap" id="camWrap">
       <video id="camVideo" autoplay playsinline muted></video>
       <canvas id="guideCanvas" class="guide"></canvas>
@@ -495,7 +524,7 @@ function readQuadrants(ctx, W, H, Q, rotDeg, quadMap) {
 }
 
 // =====================================================================
-// РЕАЛЬНА КАМЕРА (веб API) — Логіка ініціалізації взята з Cam Disc Scanner
+// РЕАЛЬНА КАМЕРА (веб API) — Логіка перемикання кнопок та шарів
 // =====================================================================
 let camStream = null;
 
@@ -520,7 +549,6 @@ async function startCamera() {
     });
     
     video.srcObject = camStream;
-    // Надійний старт програвання без прив'язки до внутрішніх метаданих
     await video.play();
     
     btn.textContent = 'Вимкнути камеру';
@@ -545,7 +573,6 @@ function stopCamera() {
   btn.textContent = 'Увімкнути камеру';
   status.textContent = 'Камера вимкнена.';
   
-  // Очищаємо контур-гід
   const guideCanvas = document.getElementById('guideCanvas');
   const gctx = guideCanvas.getContext('2d');
   gctx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
