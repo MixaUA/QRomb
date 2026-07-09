@@ -100,7 +100,7 @@
 
   <div class="panel">
     <label>Камера</label>
-    <div class="warn-note">Вирівняй фізичну вишивку по пунктирному контуру-гіду вручну, так само як прицілюєшся під QR.</div>
+    <div class="warn-note">Кнопка "Захопити кадр" — ручний режим, вирівняй вишивку під пунктирний гід. "Авто-скан" — повний автодетект по чорній рамці, вирівнювання не потрібне.</div>
     <div class="cam-wrap" id="camWrap">
       <div class="cam-placeholder" id="camPlaceholder">Камеру ще не увімкнено</div>
       <div class="cam-live" id="camLive">
@@ -201,6 +201,17 @@ function computeCanvasSize(Q) {
   const outerPad = off + CELL;
   const fullExtent = squareSize + 2 * outerPad;
   return Math.ceil(fullExtent * Math.SQRT2) + 20;
+}
+
+// Довжина діагоналі САМОЇ чорної рамки (не гіда з відступом!) у локальних
+// одиницях — це те, що автодетект бачитиме як відстань N-S чи E-W між
+// протилежними кутиками ромба на екрані (після множення на знайдений
+// масштаб). Використовує ту саму геометрію, що й strokeRect у drawBorderBand.
+function borderDiagonalUnits(Q) {
+  const squareSize = 2 * Q * CELL;
+  const off = CELL + CELL / 2;
+  const borderSide = squareSize + 2 * off;
+  return borderSide * Math.SQRT2;
 }
 
 function buildProximityOrder(Q) {
@@ -315,12 +326,31 @@ function drawPattern(ctx, W, H, Q, dataBits, rotDeg, quadMap) {
 function readQuadrants(ctx, W, H, Q, rotDeg, quadMap) {
   const img = ctx.getImageData(0, 0, W, H);
   const d = img.data;
-  function lumAt(x, y) {
-    x = Math.round(x); y = Math.round(y);
-    if (x < 0 || x >= W || y < 0 || y >= H) return 255;
-    const i = (y * W + x) * 4;
-    return d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
+
+  // ВИПРАВЛЕННЯ №2 (головна причина низької точності): раніше тут бралась
+  // яскравість ОДНОГО пікселя рівно в розрахунковому центрі клітинки.
+  // Хрестик вишивки перетинається саме по центру, тож щонайменша похибка
+  // вирівнювання (тремтіння руки, фокус, дрібна похибка масштабу на пару
+  // пікселів) — і семпл вже промахується повз хрестик і читає фон.
+  // Тепер беремо СЕРЕДНЮ яскравість невеликої області навколо центру —
+  // це набагато толерантніше до дрібних похибок вирівнювання.
+  const SAMPLE_RADIUS = Math.max(2, Math.round(CELL * 0.28));
+  function lumAvgAt(cx, cy) {
+    const x0 = Math.max(0, Math.round(cx - SAMPLE_RADIUS));
+    const x1 = Math.min(W - 1, Math.round(cx + SAMPLE_RADIUS));
+    const y0 = Math.max(0, Math.round(cy - SAMPLE_RADIUS));
+    const y1 = Math.min(H - 1, Math.round(cy + SAMPLE_RADIUS));
+    let sum = 0, count = 0;
+    for (let yy = y0; yy <= y1; yy++) {
+      for (let xx = x0; xx <= x1; xx++) {
+        const i = (yy * W + xx) * 4;
+        sum += d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+        count++;
+      }
+    }
+    return count ? sum / count : 255;
   }
+
   const squareSize = 2 * Q * CELL;
   const cell = CELL;
   const angle = (45 + rotDeg) * Math.PI / 180;
@@ -331,35 +361,38 @@ function readQuadrants(ctx, W, H, Q, rotDeg, quadMap) {
     return { x: W/2 + rx, y: H/2 + ry };
   }
 
-  const sampledLums = [];
-  for (let qy = 0; qy < 2; qy++) {
-    for (let qx = 0; qx < 2; qx++) {
-      for (let ry = 0; ry < Q; ry++) {
-        for (let rx = 0; rx < Q; rx++) {
-          const localX = -squareSize/2 + qx * Q * cell + rx * cell + cell/2;
-          const localY = -squareSize/2 + qy * Q * cell + ry * cell + cell/2;
-          const p = toCanvas(localX, localY);
-          sampledLums.push(lumAt(p.x, p.y));
-        }
-      }
-    }
-  }
-  let minL = 255, maxL = 0;
-  for (const l of sampledLums) { if (l < minL) minL = l; if (l > maxL) maxL = l; }
-  const threshold = (minL + maxL) / 2;
-
+  // ВИПРАВЛЕННЯ №3: поріг яскравості раніше рахувався ОДИН на весь кадр.
+  // При знімку телефоном освітлення часто нерівномірне (тінь від руки,
+  // кут падіння світла), тож один спільний поріг систематично помиляється
+  // в тьмянішому чи яскравішому куті. Тепер поріг рахується ОКРЕМО для
+  // кожного з 4 секторів — за його ж власним діапазоном яскравості.
   const results = [[], [], [], []];
+  let globalMinL = 255, globalMaxL = 0;
+
   for (let qy = 0; qy < 2; qy++) {
     for (let qx = 0; qx < 2; qx++) {
       const qIdx = quadMap[qx + ',' + qy];
-      const bitsForQuad = new Array(Q * Q).fill(0);
+
+      const lums = [];
       for (let ry = 0; ry < Q; ry++) {
         for (let rx = 0; rx < Q; rx++) {
           const localX = -squareSize/2 + qx * Q * cell + rx * cell + cell/2;
           const localY = -squareSize/2 + qy * Q * cell + ry * cell + cell/2;
           const p = toCanvas(localX, localY);
-          const l = lumAt(p.x, p.y);
-          const bit = l < threshold ? 1 : 0;
+          lums.push(lumAvgAt(p.x, p.y));
+        }
+      }
+      let minL = 255, maxL = 0;
+      for (const l of lums) { if (l < minL) minL = l; if (l > maxL) maxL = l; }
+      const threshold = (minL + maxL) / 2;
+      if (minL < globalMinL) globalMinL = minL;
+      if (maxL > globalMaxL) globalMaxL = maxL;
+
+      const bitsForQuad = new Array(Q * Q).fill(0);
+      let k = 0;
+      for (let ry = 0; ry < Q; ry++) {
+        for (let rx = 0; rx < Q; rx++) {
+          const bit = lums[k++] < threshold ? 1 : 0;
           const base = rotateIndex(rx, ry, Q, qIdx);
           bitsForQuad[base.y * Q + base.x] = bit;
         }
@@ -367,7 +400,7 @@ function readQuadrants(ctx, W, H, Q, rotDeg, quadMap) {
       results[qIdx] = bitsForQuad;
     }
   }
-  return { results, threshold, minL, maxL };
+  return { results, threshold: (globalMinL + globalMaxL) / 2, minL: globalMinL, maxL: globalMaxL };
 }
 
 function escapeHtml(s) {
@@ -604,6 +637,326 @@ function captureAndDecode() {
   }
 }
 
+// ================================================================
+// ПОВНИЙ АВТОДЕТЕКТ ПО ЧОРНІЙ РАМЦІ (без ручного вирівнювання під гід)
+//
+// Ідея: чорна рамка з хрестиків навколо коду — це, по суті, вже готовий
+// якір, який завжди присутній у самій естетиці вишиванки (не треба
+// домальовувати щось нове). Замість того, щоб вимагати від людини
+// ідеально прицілитись під пунктирний гід, розпізнавач сам шукає цю
+// рамку на кадрі, обчислює її реальні центр/масштаб/нахил — і з них уже
+// напряму рахує, де на фото лежить кожен біт даних.
+//
+// Один нюанс: сама рамка — квадрат, а квадрат симетричний під поворотом
+// на 90°. Тобто з неї саму по собі не можна взнати, яка вершина "верхня".
+// Це розв'язується перебором усіх 4 можливих орієнтацій і вибором тієї,
+// де 4 копії коду (з 4 секторів) найкраще узгоджуються між собою — та
+// сама 4-кратна надлишковість, що вже закладена в дизайн заради захисту
+// від пошкоджень, тут заразом розв'язує і проблему орієнтації.
+// ================================================================
+
+const ANALYSIS_SIZE = 360; // фіксований розмір канвасу аналізу — не залежить від розміру camWrap на екрані
+const analysisCanvasAuto = document.createElement('canvas');
+analysisCanvasAuto.width = ANALYSIS_SIZE;
+analysisCanvasAuto.height = ANALYSIS_SIZE;
+const analysisCtxAuto = analysisCanvasAuto.getContext('2d', { willReadFrequently: true });
+
+// перевикористовувані буфери для flood-fill — виділяємо один раз, а не на кожен кадр
+const autoVisitedBuf = new Uint8Array(ANALYSIS_SIZE * ANALYSIS_SIZE);
+const AUTO_FLOOD_CAP = 6000;
+const autoFloodX = new Int32Array(AUTO_FLOOD_CAP);
+const autoFloodY = new Int32Array(AUTO_FLOOD_CAP);
+
+/* Класифікація пікселя за кольором, а не лише яскравістю — у нас є 3 чітко
+   різні кольори (кремове тло, майже чорна рамка, темно-червоний код), і
+   відрізнити чорне від червоного тільки за яскравістю ненадійно (обидва
+   темніші за фон). Тому дивимось ще й на "червоний зсув" (наскільки R
+   канал вищий за середнє G/B) та насиченість (розкид між каналами). */
+function classifyPixel(r, g, b) {
+  const lum = r * 0.299 + g * 0.587 + b * 0.114;
+  const maxC = Math.max(r, g, b), minC = Math.min(r, g, b);
+  const sat = maxC - minC;
+  const redBias = r - (g + b) / 2;
+  if (lum < 95 && sat < 45) return 'border';           // темне й нейтральне (не червонясте) -> рамка
+  if (redBias > 22 && lum > 20 && lum < 195) return 'data'; // помітно червонясте -> код
+  return 'bg';
+}
+
+/* Шукає всі окремі цятки-стібки рамки на кадрі через flood-fill (той самий
+   прийом, що й пошук якорів у Cam Disc Scanner). Замість одного суцільного
+   контуру рамка складається з десятків окремих хрестиків з проміжками —
+   тому шукаємо саме окремі компактні плями, а не одну велику фігуру.
+   Занадто великі плями (>250px) відкидаємо одразу: це, найімовірніше,
+   суцільна темна пляма фону (тінь, темний предмет), а не одна цятка рамки. */
+function findBorderBlobs(data, W, H) {
+  autoVisitedBuf.fill(0);
+  const blobs = [];
+  const STEP = 3; // крок сканування в пошуках СТАРТОВОЇ точки нової плями
+
+  for (let y = 4; y < H - 4; y += STEP) {
+    for (let x = 4; x < W - 4; x += STEP) {
+      const startIdx = y * W + x;
+      if (autoVisitedBuf[startIdx]) continue;
+      const i4 = startIdx * 4;
+      if (classifyPixel(data[i4], data[i4 + 1], data[i4 + 2]) !== 'border') continue;
+
+      autoFloodX[0] = x; autoFloodY[0] = y;
+      let qHead = 0, qTail = 1;
+      let sx = 0, sy = 0, cnt = 0;
+      while (qHead < qTail && cnt < 1500) {
+        const cx = autoFloodX[qHead], cy = autoFloodY[qHead];
+        qHead++;
+        if (cx < 0 || cx >= W || cy < 0 || cy >= H) continue;
+        const cIdx = cy * W + cx;
+        if (autoVisitedBuf[cIdx]) continue;
+        const cI4 = cIdx * 4;
+        if (classifyPixel(data[cI4], data[cI4 + 1], data[cI4 + 2]) !== 'border') continue;
+        autoVisitedBuf[cIdx] = 1;
+        sx += cx; sy += cy; cnt++;
+        if (qTail + 4 <= autoFloodX.length) {
+          autoFloodX[qTail] = cx + 2; autoFloodY[qTail] = cy; qTail++;
+          autoFloodX[qTail] = cx - 2; autoFloodY[qTail] = cy; qTail++;
+          autoFloodX[qTail] = cx; autoFloodY[qTail] = cy + 2; qTail++;
+          autoFloodX[qTail] = cx; autoFloodY[qTail] = cy - 2; qTail++;
+        }
+      }
+      if (cnt >= 3 && cnt <= 250) {
+        blobs.push({ x: sx / cnt, y: sy / cnt, size: cnt });
+      }
+    }
+  }
+  return blobs;
+}
+
+/* серед знайдених цяток рамки бере 4 крайні (найвищу/найнижчу/найлівішу/
+   найправішу) — для опуклої фігури (а квадрат/ромб опуклий) крайня точка
+   в будь-якому напрямку завжди є вершиною, тож це працює під будь-яким
+   нахилом камери, не лише коли ромб рівно навпроти об'єктива */
+function pickExtremeBlobs(blobs) {
+  let N = blobs[0], S = blobs[0], Wp = blobs[0], E = blobs[0];
+  for (const b of blobs) {
+    if (b.y < N.y) N = b;
+    if (b.y > S.y) S = b;
+    if (b.x < Wp.x) Wp = b;
+    if (b.x > E.x) E = b;
+  }
+  return { N, S, W: Wp, E };
+}
+
+function dist2(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
+
+/* Той самий алгоритм семплінгу бітів, що й readQuadrants (усереднення
+   області + окремий поріг на сектор), але геометрія (центр/поворот/
+   масштаб) передається ЗЗОВНІ через toCanvasFn — бо в автодетекті вона
+   щоразу обчислюється заново з реально знайденої рамки, а не завжди
+   однакова, як при ручному вирівнюванні під гід. */
+function sampleBitsWithTransform(data, W, H, Q, quadMap, toCanvasFn, sampleRadius) {
+  function lumAvgAt(cx, cy) {
+    const x0 = Math.max(0, Math.round(cx - sampleRadius));
+    const x1 = Math.min(W - 1, Math.round(cx + sampleRadius));
+    const y0 = Math.max(0, Math.round(cy - sampleRadius));
+    const y1 = Math.min(H - 1, Math.round(cy + sampleRadius));
+    let sum = 0, count = 0;
+    for (let yy = y0; yy <= y1; yy++) {
+      for (let xx = x0; xx <= x1; xx++) {
+        const i = (yy * W + xx) * 4;
+        sum += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+        count++;
+      }
+    }
+    return count ? sum / count : 255;
+  }
+
+  const squareSize = 2 * Q * CELL;
+  const cell = CELL;
+  const results = [[], [], [], []];
+
+  for (let qy = 0; qy < 2; qy++) {
+    for (let qx = 0; qx < 2; qx++) {
+      const qIdx = quadMap[qx + ',' + qy];
+      const lums = [];
+      for (let ry = 0; ry < Q; ry++) {
+        for (let rx = 0; rx < Q; rx++) {
+          const localX = -squareSize / 2 + qx * Q * cell + rx * cell + cell / 2;
+          const localY = -squareSize / 2 + qy * Q * cell + ry * cell + cell / 2;
+          const p = toCanvasFn(localX, localY);
+          lums.push(lumAvgAt(p.x, p.y));
+        }
+      }
+      let minL = 255, maxL = 0;
+      for (const l of lums) { if (l < minL) minL = l; if (l > maxL) maxL = l; }
+      const threshold = (minL + maxL) / 2;
+      const bitsForQuad = new Array(Q * Q).fill(0);
+      let k = 0;
+      for (let ry = 0; ry < Q; ry++) {
+        for (let rx = 0; rx < Q; rx++) {
+          const bit = lums[k++] < threshold ? 1 : 0;
+          const base = rotateIndex(rx, ry, Q, qIdx);
+          bitsForQuad[base.y * Q + base.x] = bit;
+        }
+      }
+      results[qIdx] = bitsForQuad;
+    }
+  }
+  return { results };
+}
+
+/* Наскільки узгоджені 4 сектори між собою: для кожної бітової позиції
+   дивимось, скільки з 4 копій дали однакове значення (4 чи 3 з 4 —
+   добре, 2 з 4 — повна непевність). Використовується і як міра довіри
+   результату, і як спосіб обрати правильну з 4 гіпотез повороту. */
+function computeAgreement(quadResults, capacity) {
+  let sumAgree = 0;
+  for (let i = 0; i < capacity; i++) {
+    let ones = 0;
+    for (let q = 0; q < 4; q++) ones += quadResults[q][i];
+    sumAgree += Math.max(ones, 4 - ones);
+  }
+  return sumAgree / (capacity * 4);
+}
+
+const AUTO_MIN_BLOBS = 8;                       // мінімум знайдених цяток рамки, щоб довіряти геометрії
+const AUTO_MAX_DIAG_RATIO_DEV = 0.25;           // допустима відносна різниця довжин двох діагоналей
+const AUTO_MIN_DIAG_PX = 60;                    // занадто малий ромб на кадрі — або шум, або задалеко
+const AUTO_MAX_DIAG_PX = ANALYSIS_SIZE * 0.98;  // занадто великий — вишивка притиснута впритул до камери
+const AUTO_MIN_AGREEMENT = 0.82;                // мінімальна узгодженість секторів для впевненого результату
+
+function autoDetectAndDecode() {
+  const video = document.getElementById('camVideo');
+  const status = document.getElementById('camStatus');
+  if (!camStream || video.readyState < 2) {
+    status.textContent = 'Спершу увімкни камеру і дочекайся зображення.';
+    return;
+  }
+
+  try {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (vw && vh) {
+      const sSize = Math.min(vw, vh);
+      const sx = (vw - sSize) / 2, sy = (vh - sSize) / 2;
+      analysisCtxAuto.drawImage(video, sx, sy, sSize, sSize, 0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+    } else {
+      analysisCtxAuto.drawImage(video, 0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+    }
+
+    const img = analysisCtxAuto.getImageData(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+    const data = img.data;
+
+    const blobs = findBorderBlobs(data, ANALYSIS_SIZE, ANALYSIS_SIZE);
+    if (blobs.length < AUTO_MIN_BLOBS) {
+      status.textContent = `Шукаю рамку... (знайдено лише ${blobs.length} цяток)`;
+      return;
+    }
+
+    const { N, S, W: Wp, E } = pickExtremeBlobs(blobs);
+    const dNS = dist2(N, S), dEW = dist2(Wp, E);
+    const diagRatioDev = Math.abs(dNS - dEW) / ((dNS + dEW) / 2);
+    if (diagRatioDev > AUTO_MAX_DIAG_RATIO_DEV) {
+      status.textContent = `Форма не схожа на ромб (розбіжність діагоналей ${(diagRatioDev * 100).toFixed(0)}%) — вирівняй камеру.`;
+      log(`Автодетект: знайдено ${blobs.length} цяток, N=(${N.x.toFixed(0)},${N.y.toFixed(0)}) S=(${S.x.toFixed(0)},${S.y.toFixed(0)}) W=(${Wp.x.toFixed(0)},${Wp.y.toFixed(0)}) E=(${E.x.toFixed(0)},${E.y.toFixed(0)}); dNS=${dNS.toFixed(1)} dEW=${dEW.toFixed(1)} — відхилення завелике.`);
+      return;
+    }
+
+    const diagAvg = (dNS + dEW) / 2;
+    if (diagAvg < AUTO_MIN_DIAG_PX || diagAvg > AUTO_MAX_DIAG_PX) {
+      status.textContent = diagAvg < AUTO_MIN_DIAG_PX ? 'Забагато далеко — піднеси ближче.' : 'Занадто близько — трохи відсунь.';
+      log(`Автодетект: diagAvg=${diagAvg.toFixed(1)}px поза межами [${AUTO_MIN_DIAG_PX}, ${AUTO_MAX_DIAG_PX.toFixed(0)}].`);
+      return;
+    }
+
+    const center = { x: (N.x + S.x + Wp.x + E.x) / 4, y: (N.y + S.y + Wp.y + E.y) / 4 };
+    const centerNS = { x: (N.x + S.x) / 2, y: (N.y + S.y) / 2 };
+    const centerEW = { x: (Wp.x + E.x) / 2, y: (Wp.y + E.y) / 2 };
+    const centerDrift = dist2(centerNS, centerEW) / diagAvg;
+    if (centerDrift > 0.18) {
+      status.textContent = 'Геометрія нестабільна — тримай камеру рівніше.';
+      log(`Автодетект: центри двох діагоналей розходяться на ${(centerDrift * 100).toFixed(0)}% — форма не схожа на правильний ромб.`);
+      return;
+    }
+
+    const Q = parseInt(document.getElementById('qSize').value);
+    const scale = diagAvg / borderDiagonalUnits(Q);
+    const baseAngle = Math.atan2(N.y - center.y, N.x - center.x);
+    const sampleRadius = Math.max(1, Math.round(CELL * 0.28 * scale));
+
+    const quadMap = getQuadRotationMap();
+    const phrase = document.getElementById('phraseInput').value;
+    const { bits, charCount } = encodePhrase(phrase);
+    const capacity = Q * Q;
+    const order = buildProximityOrder(Q);
+    const activeCount = Math.min(bits.length, capacity);
+    const groundTruth = new Array(capacity).fill(0);
+    for (let k = 0; k < activeCount; k++) groundTruth[order[k]] = bits[k];
+
+    // рамка симетрична під поворотом на 90° — перебираємо 4 гіпотези,
+    // яка з 4 вершин ромба насправді відповідає "нульовому" куту схеми,
+    // і довіряємо тій, де сектори найкраще узгоджуються між собою
+    let best = null;
+    for (let k = 0; k < 4; k++) {
+      const localCornerAngle = Math.PI / 4 + k * (Math.PI / 2);
+      const totalAngle = baseAngle - localCornerAngle;
+      const cosA = Math.cos(totalAngle), sinA = Math.sin(totalAngle);
+      const toCanvasFn = (lx, ly) => ({
+        x: center.x + scale * (lx * cosA - ly * sinA),
+        y: center.y + scale * (lx * sinA + ly * cosA)
+      });
+      const { results: quadReadings } = sampleBitsWithTransform(data, ANALYSIS_SIZE, ANALYSIS_SIZE, Q, quadMap, toCanvasFn, sampleRadius);
+      const agreement = computeAgreement(quadReadings, capacity);
+      if (!best || agreement > best.agreement) best = { k, agreement, quadReadings };
+    }
+
+    log(`Автодетект: цяток=${blobs.length}, центр=(${center.x.toFixed(0)},${center.y.toFixed(0)}), масштаб=${scale.toFixed(3)}, dNS=${dNS.toFixed(1)}, dEW=${dEW.toFixed(1)} — орієнтація #${best.k}, узгодженість=${(best.agreement * 100).toFixed(1)}%.`);
+
+    if (best.agreement < AUTO_MIN_AGREEMENT) {
+      status.textContent = `Знайшов рамку, але сектори не узгоджені (${(best.agreement * 100).toFixed(0)}%) — тримай рівніше й чекай.`;
+      return;
+    }
+
+    const votedBits = new Array(capacity).fill(0);
+    for (let i = 0; i < capacity; i++) {
+      let sum = 0;
+      for (let q = 0; q < 4; q++) sum += best.quadReadings[q][i];
+      votedBits[i] = sum >= 2 ? 1 : 0;
+    }
+
+    function bitsToPhrase(arr) {
+      const seq = [];
+      for (let k = 0; k < activeCount; k++) seq.push(arr[order[k]]);
+      let out = '';
+      for (let i = 0; i + 5 < seq.length; i += 6) out += bitsToChar(seq.slice(i, i + 6));
+      return out;
+    }
+    function accuracy(arr) {
+      let correct = 0;
+      for (let k = 0; k < activeCount; k++) {
+        const g = order[k];
+        if (arr[g] === groundTruth[g]) correct++;
+      }
+      return activeCount === 0 ? 100 : Math.round((correct / activeCount) * 100);
+    }
+
+    const votedAcc = accuracy(votedBits);
+    const votedText = bitsToPhrase(votedBits);
+
+    let html = '';
+    html += `<div style="margin-bottom:8px;color:rgba(255,255,255,0.6)">Автодетект по рамці — цяток=${blobs.length}, узгодженість секторів ${(best.agreement * 100).toFixed(0)}%, орієнтація #${best.k}</div>`;
+    for (let q = 0; q < 4; q++) {
+      const acc = accuracy(best.quadReadings[q]);
+      const text = bitsToPhrase(best.quadReadings[q]);
+      const cls = acc === 100 ? 'ok' : (acc >= 85 ? '' : 'bad');
+      html += `<div class="quad-line"><span>Сектор ${q + 1} (${acc}%)</span><span class="${cls}">"${escapeHtml(text)}"</span></div>`;
+    }
+    html += `<div class="final-result"><div class="label">Голосування більшості (${votedAcc}% точності)</div>"${escapeHtml(votedText)}"</div>`;
+    document.getElementById('camResultsBox').innerHTML = html;
+    status.textContent = `Розпізнано автоматично (масштаб ${scale.toFixed(2)}, узгодженість ${(best.agreement * 100).toFixed(0)}%).`;
+    log(`Автодетект: голосування точність=${votedAcc}%, текст="${votedText}".`);
+  } catch (e) {
+    log(`ПОМИЛКА автодетекту: ${e.name}: ${e.message}`);
+    log(e.stack || '(стек недоступний)');
+    document.getElementById('camStatus').textContent = `Помилка автодетекту: ${e.message}`;
+  }
+}
+
 // ===== АВТО-СКАНУВАННЯ =====
 // Замість ручного натискання "Захопити кадр" можна ввімкнути чекбокс —
 // тоді захоплення й декодування самі повторюються з інтервалом,
@@ -616,8 +969,8 @@ function updateAutoScanState() {
   const shouldRun = checkbox.checked && !!camStream;
 
   if (shouldRun && !autoScanTimer) {
-    log(`Авто-сканування увімкнено (спроба кожні ${AUTO_SCAN_INTERVAL_MS} мс).`);
-    autoScanTimer = setInterval(captureAndDecode, AUTO_SCAN_INTERVAL_MS);
+    log(`Авто-сканування (повний автодетект по рамці) увімкнено — спроба кожні ${AUTO_SCAN_INTERVAL_MS} мс.`);
+    autoScanTimer = setInterval(autoDetectAndDecode, AUTO_SCAN_INTERVAL_MS);
   } else if (!shouldRun && autoScanTimer) {
     log('Авто-сканування вимкнено.');
     clearInterval(autoScanTimer);
