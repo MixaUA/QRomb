@@ -108,10 +108,6 @@
         <canvas id="guideCanvas" class="guide"></canvas>
       </div>
     </div>
-    <div class="row">
-      <label>Пристрій камери</label>
-      <select id="camDeviceSelect"><option value="">(за замовчуванням)</option></select>
-    </div>
     <button id="camToggleBtn">Увімкнути камеру</button>
     <button id="captureBtn">Захопити кадр і декодувати</button>
     <div class="capacity-note" id="camStatus"></div>
@@ -394,26 +390,6 @@ function generateSchema() {
 // ===== КАМЕРА =====
 let camStream = null;
 
-async function populateCameraList() {
-  try {
-    // enumerateDevices без попереднього дозволу часто повертає порожні labels —
-    // тому спершу пробуємо швидкий getUserMedia лише щоб розблокувати підписи
-    const select = document.getElementById('camDeviceSelect');
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter(d => d.kind === 'videoinput');
-    select.innerHTML = '<option value="">(за замовчуванням)</option>';
-    cams.forEach((d, i) => {
-      const opt = document.createElement('option');
-      opt.value = d.deviceId;
-      opt.textContent = d.label || `Камера ${i + 1}`;
-      select.appendChild(opt);
-    });
-    log(`Знайдено камер: ${cams.length}. ${cams.map(c => c.label || '(без назви)').join(' | ')}`);
-  } catch (e) {
-    log(`Не вдалося отримати список камер: ${e.message}`);
-  }
-}
-
 async function toggleCamera() {
   const btn = document.getElementById('camToggleBtn');
   if (camStream) {
@@ -422,16 +398,12 @@ async function toggleCamera() {
     return;
   }
   const status = document.getElementById('camStatus');
-  const deviceId = document.getElementById('camDeviceSelect').value;
-  log(`Запит доступу до камери... (обраний пристрій: ${deviceId || '(за замовчуванням)'})`);
+  log('Запит доступу до камери...');
   try {
-    const constraints = deviceId
-      ? { video: { deviceId: { exact: deviceId }, width: { ideal: 720 }, height: { ideal: 720 } } }
-      : { video: { width: { ideal: 720 }, height: { ideal: 720 } } };
-    camStream = await navigator.mediaDevices.getUserMedia(constraints);
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 720 }, height: { ideal: 720 } }
+    });
     log('getUserMedia: дозвіл отримано, потік створено.');
-    // тепер, коли дозвіл є, підписи пристроїв стануть доступні — оновлюємо список
-    populateCameraList();
     const video = document.getElementById('camVideo');
     video.srcObject = camStream;
     await new Promise((resolve) => {
@@ -445,7 +417,7 @@ async function toggleCamera() {
     if (track) log(`Активна камера: ${track.label || '(без назви)'}`);
     document.getElementById('camPlaceholder').style.display = 'none';
     document.getElementById('camLive').classList.add('active');
-    status.textContent = 'Камера увімкнена — вирівняй вишивку під пунктирний гід і натисни "Захопити". Якщо картинка одноколірна/синювата — це, ймовірно, ІЧ-камера; обери іншу в списку "Пристрій камери" і увімкни знову.';
+    status.textContent = 'Камера увімкнена — вирівняй вишивку під пунктирний гід і натисни "Захопити".';
     btn.textContent = 'Вимкнути камеру';
     drawGuide();
   } catch (e) {
@@ -629,7 +601,6 @@ document.getElementById('clearLogBtn').addEventListener('click', clearLogFn);
 
 updateCapacityNote();
 generateSchema();
-populateCameraList();
 log('Ініціалізація завершена. Готово до тесту.');
 </script>
 </body>
