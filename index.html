@@ -110,6 +110,10 @@
     </div>
     <button id="camToggleBtn">Увімкнути камеру</button>
     <button id="captureBtn">Захопити кадр і декодувати</button>
+    <div class="row" style="margin-top:10px;">
+      <label>Авто-скан</label>
+      <input type="checkbox" id="autoScanToggle" />
+    </div>
     <div class="capacity-note" id="camStatus"></div>
   </div>
 
@@ -167,6 +171,13 @@ function encodePhrase(phrase) {
 }
 
 const CELL = 20;
+
+// Наскільки гід (пунктирний контур) на екрані камери менший за весь кадр.
+// Той самий коефіцієнт МУСИТЬ використовуватись і при малюванні гіда (drawGuide),
+// і при обрізанні захопленого кадру (captureAndDecode) — інакше масштаб,
+// під який підлаштовується користувач, не збігається з масштабом,
+// який аналізує розпізнавач, і точки самплінгу з'їжджають із комірок.
+const CAM_GUIDE_FILL = 0.92;
 
 function createStitchStamp(color) {
   const c = document.createElement('canvas');
@@ -420,6 +431,8 @@ async function toggleCamera() {
     status.textContent = 'Камера увімкнена — вирівняй вишивку під пунктирний гід і натисни "Захопити".';
     btn.textContent = 'Вимкнути камеру';
     drawGuide();
+    // Якщо чекбокс авто-скану вже був позначений раніше — одразу запускаємо таймер.
+    updateAutoScanState();
   } catch (e) {
     log(`ПОМИЛКА камери: ${e.name}: ${e.message}`);
     status.textContent = `Помилка камери: ${e.message}`;
@@ -436,6 +449,9 @@ function stopCamera() {
   document.getElementById('camLive').classList.remove('active');
   document.getElementById('camPlaceholder').style.display = 'flex';
   document.getElementById('camStatus').textContent = 'Камеру вимкнено.';
+  // Камера вимкнена — авто-скан за визначенням більше не може працювати,
+  // тож зупиняємо таймер, якщо він був запущений.
+  updateAutoScanState();
 }
 
 function drawGuide() {
@@ -452,7 +468,7 @@ function drawGuide() {
   const gap = CELL;
   const off = gap + CELL / 2;
   const fullExtent = (squareSize + 2 * (off + CELL)) * Math.SQRT2;
-  const scale = (size * 0.92) / fullExtent;
+  const scale = (size * CAM_GUIDE_FILL) / fullExtent;
 
   gctx.save();
   gctx.translate(size / 2, size / 2);
@@ -514,11 +530,25 @@ function captureAndDecode() {
     const fullExtent = (squareSize + 2 * (off + CELL)) * Math.SQRT2;
     const nativeSize = Math.ceil(fullExtent);
 
+    // КЛЮЧОВЕ ВИПРАВЛЕННЯ: раніше сюди розтягувався ВЕСЬ кадр (100% ширини
+    // camWrap), а гід на екрані показує вишивку зменшеною до CAM_GUIDE_FILL
+    // (92%) від кадру, з відступом по краях. Через це реальна вишивка на
+    // фото була "меншою", ніж очікував розпізнавач, і всі точки самплінгу
+    // потрапляли трохи не в ті клітинки — звідси й хибне розпізнавання.
+    // Тепер спершу вирізаємо той самий центральний квадрат, який показує
+    // гід, і тільки його масштабуємо в робочий розмір.
+    const guideBoxSize = size * CAM_GUIDE_FILL;
+    const cropOffset = (size - guideBoxSize) / 2;
+
     const scaledCanvas = document.createElement('canvas');
     scaledCanvas.width = nativeSize; scaledCanvas.height = nativeSize;
     const sctx = scaledCanvas.getContext('2d', { willReadFrequently: true });
-    sctx.drawImage(captureCanvas, 0, 0, size, size, 0, 0, nativeSize, nativeSize);
-    log(`Масштабовано до nativeSize=${nativeSize}.`);
+    sctx.drawImage(
+      captureCanvas,
+      cropOffset, cropOffset, guideBoxSize, guideBoxSize,
+      0, 0, nativeSize, nativeSize
+    );
+    log(`Обрізано під зону гіда (${(CAM_GUIDE_FILL * 100).toFixed(0)}% кадру, зсув ${cropOffset.toFixed(1)}px) і масштабовано до nativeSize=${nativeSize}.`);
 
     const { results: quadReadings, threshold, minL, maxL } = readQuadrants(sctx, nativeSize, nativeSize, Q, 0, quadMap);
     log(`readQuadrants завершено. Поріг яскравості=${threshold.toFixed(1)} (min=${minL.toFixed(1)}, max=${maxL.toFixed(1)}).`);
@@ -574,6 +604,27 @@ function captureAndDecode() {
   }
 }
 
+// ===== АВТО-СКАНУВАННЯ =====
+// Замість ручного натискання "Захопити кадр" можна ввімкнути чекбокс —
+// тоді захоплення й декодування самі повторюються з інтервалом,
+// поки камера увімкнена і чекбокс позначений.
+let autoScanTimer = null;
+const AUTO_SCAN_INTERVAL_MS = 900; // як часто пробувати захопити кадр в авто-режимі
+
+function updateAutoScanState() {
+  const checkbox = document.getElementById('autoScanToggle');
+  const shouldRun = checkbox.checked && !!camStream;
+
+  if (shouldRun && !autoScanTimer) {
+    log(`Авто-сканування увімкнено (спроба кожні ${AUTO_SCAN_INTERVAL_MS} мс).`);
+    autoScanTimer = setInterval(captureAndDecode, AUTO_SCAN_INTERVAL_MS);
+  } else if (!shouldRun && autoScanTimer) {
+    log('Авто-сканування вимкнено.');
+    clearInterval(autoScanTimer);
+    autoScanTimer = null;
+  }
+}
+
 function copyLogFn() {
   const box = document.getElementById('logBox');
   box.select();
@@ -596,6 +647,7 @@ document.getElementById('qSize').addEventListener('input', (e) => {
 document.getElementById('genSchemaBtn').addEventListener('click', generateSchema);
 document.getElementById('camToggleBtn').addEventListener('click', toggleCamera);
 document.getElementById('captureBtn').addEventListener('click', captureAndDecode);
+document.getElementById('autoScanToggle').addEventListener('change', updateAutoScanState);
 document.getElementById('copyLogBtn').addEventListener('click', copyLogFn);
 document.getElementById('clearLogBtn').addEventListener('click', clearLogFn);
 
