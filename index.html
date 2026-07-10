@@ -214,6 +214,21 @@ function borderDiagonalUnits(Q) {
   return borderSide * Math.SQRT2;
 }
 
+// Точно та сама формула, що й у drawBorderBand — скільки окремих
+// хрестиків-стібків фізично намальовано по периметру рамки для даного Q.
+// Раніше поріг мінімальної кількості знайдених цяток був фіксованим
+// числом (8), яке я взяв "на око" з прикладу для Q=8 — для іншого Q
+// реальна кількість цяток інша, тож поріг мав рахуватись від Q, а не
+// бути константою.
+function expectedBorderDotCount(Q) {
+  const squareSize = 2 * Q * CELL;
+  const off = CELL + CELL / 2;
+  const spacing = 2 * CELL;
+  const ringLen = squareSize + 2 * off;
+  const pointsPerSide = Math.max(2, Math.round(ringLen / spacing) + 1);
+  return 4 * pointsPerSide - 4;
+}
+
 function buildProximityOrder(Q) {
   const order = [];
   const maxD = 2 * (Q - 1);
@@ -667,42 +682,81 @@ const AUTO_FLOOD_CAP = 6000;
 const autoFloodX = new Int32Array(AUTO_FLOOD_CAP);
 const autoFloodY = new Int32Array(AUTO_FLOOD_CAP);
 
-/* Класифікація пікселя за кольором, а не лише яскравістю — у нас є 3 чітко
-   різні кольори (кремове тло, майже чорна рамка, темно-червоний код), і
-   відрізнити чорне від червоного тільки за яскравістю ненадійно (обидва
-   темніші за фон). Тому дивимось ще й на "червоний зсув" (наскільки R
-   канал вищий за середнє G/B) та насиченість (розкид між каналами). */
-function classifyPixel(r, g, b) {
-  const lum = r * 0.299 + g * 0.587 + b * 0.114;
-  const maxC = Math.max(r, g, b), minC = Math.min(r, g, b);
-  const sat = maxC - minC;
-  const redBias = r - (g + b) / 2;
-  if (lum < 95 && sat < 45) return 'border';           // темне й нейтральне (не червонясте) -> рамка
-  if (redBias > 22 && lum > 20 && lum < 195) return 'data'; // помітно червонясте -> код
-  return 'bg';
+/* Раніше тут була класифікація за кольором (окремо "чорна рамка" і
+   "червоний код"), щоб не плутати їх між собою. Виявилось, це зайве
+   ускладнення: рамка — найзовніший контур візерунка за конструкцією,
+   і жоден червоний код ніколи не намальований ЗА її межами. Тобто
+   навіть якщо шукати просто "темне на світлому" (не розрізняючи чорне
+   й червоне), крайні точки серед УСІХ темних плям все одно завжди
+   будуть кутиками рамки — код завжди лежить строго всередині неї.
+   Це не лише простіше, а й набагато стабільніше: не залежить від
+   кольору тканини/паперу (полотно може бути будь-яким — синім, білим,
+   картатим), а поріг адаптивний до реального освітлення кадру, а не
+   підібраний "на око" під конкретний відтінок. Той самий принцип, що
+   й у Cam Disc Scanner (DISC_POLARITY + THRESH від avgLum). */
+function computeAdaptiveThreshold(data) {
+  let totalLum = 0, count = 0;
+  for (let i = 0; i < data.length; i += 40) {
+    totalLum += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+    count++;
+  }
+  const avgLum = totalLum / count;
+  // шукаємо ТЕМНЕ на СВІТЛОМУ тлі (і рамка, і код темніші за фон)
+  return Math.min(165, Math.max(60, avgLum * 0.8));
 }
 
-/* Шукає всі окремі цятки-стібки рамки на кадрі через flood-fill (той самий
-   прийом, що й пошук якорів у Cam Disc Scanner). Замість одного суцільного
-   контуру рамка складається з десятків окремих хрестиків з проміжками —
-   тому шукаємо саме окремі компактні плями, а не одну велику фігуру.
+function isDark(r, g, b, thresh) {
+  return (r * 0.299 + g * 0.587 + b * 0.114) < thresh;
+}
+
+/* КЛЮЧОВА ВІДМІННІСТЬ рамки від випадкового темного об'єкта в кадрі
+   (тінь, край стола, чиясь чорна кофта): цятка рамки — це маленька
+   ІЗОЛЬОВАНА пляма, з усіх боків оточена світлим тлом вишивки. Тінь чи
+   сторонній предмет зазвичай або великий суцільний масив (просто не
+   пройде фільтр розміру), або межує з іншим темним. Перевіряємо кільце
+   точок трохи ЗА межами знайденої плями — якщо більшість із них не
+   світлі, це не цятка рамки, а щось інше. */
+function isIsolatedOnBackground(data, W, H, minX, maxX, minY, maxY, thresh) {
+  const haloR = 5;
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const rx = (maxX - minX) / 2 + haloR, ry = (maxY - minY) / 2 + haloR;
+  const SAMPLES = 12;
+  let lightCount = 0, total = 0;
+  for (let i = 0; i < SAMPLES; i++) {
+    const ang = (i / SAMPLES) * Math.PI * 2;
+    const px = Math.round(cx + Math.cos(ang) * rx);
+    const py = Math.round(cy + Math.sin(ang) * ry);
+    if (px < 0 || px >= W || py < 0 || py >= H) continue;
+    const idx = (py * W + px) * 4;
+    total++;
+    if (!isDark(data[idx], data[idx + 1], data[idx + 2], thresh)) lightCount++;
+  }
+  return total > 0 && (lightCount / total) >= 0.6;
+}
+
+/* Шукає всі окремі темні плями на кадрі через flood-fill (той самий
+   прийом, що й пошук якорів у Cam Disc Scanner) — і рамка, і червоний
+   код потраплять сюди однаково, це не заважає: рамка все одно завжди
+   найзовніша, тож серед крайніх точок опиняться саме її кутики.
    Занадто великі плями (>250px) відкидаємо одразу: це, найімовірніше,
-   суцільна темна пляма фону (тінь, темний предмет), а не одна цятка рамки. */
-function findBorderBlobs(data, W, H) {
+   суцільна темна пляма фону (тінь, темний предмет), а не одна цятка. */
+function findBorderBlobs(data, W, H, thresh) {
   autoVisitedBuf.fill(0);
   const blobs = [];
   const STEP = 3; // крок сканування в пошуках СТАРТОВОЇ точки нової плями
+  let rejectedElongated = 0, rejectedNotIsolated = 0;
 
   for (let y = 4; y < H - 4; y += STEP) {
     for (let x = 4; x < W - 4; x += STEP) {
       const startIdx = y * W + x;
       if (autoVisitedBuf[startIdx]) continue;
       const i4 = startIdx * 4;
-      if (classifyPixel(data[i4], data[i4 + 1], data[i4 + 2]) !== 'border') continue;
+      if (!isDark(data[i4], data[i4 + 1], data[i4 + 2], thresh)) continue;
 
       autoFloodX[0] = x; autoFloodY[0] = y;
       let qHead = 0, qTail = 1;
       let sx = 0, sy = 0, cnt = 0;
+      let minX = x, maxX = x, minY = y, maxY = y;
       while (qHead < qTail && cnt < 1500) {
         const cx = autoFloodX[qHead], cy = autoFloodY[qHead];
         qHead++;
@@ -710,9 +764,11 @@ function findBorderBlobs(data, W, H) {
         const cIdx = cy * W + cx;
         if (autoVisitedBuf[cIdx]) continue;
         const cI4 = cIdx * 4;
-        if (classifyPixel(data[cI4], data[cI4 + 1], data[cI4 + 2]) !== 'border') continue;
+        if (!isDark(data[cI4], data[cI4 + 1], data[cI4 + 2], thresh)) continue;
         autoVisitedBuf[cIdx] = 1;
         sx += cx; sy += cy; cnt++;
+        if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
         if (qTail + 4 <= autoFloodX.length) {
           autoFloodX[qTail] = cx + 2; autoFloodY[qTail] = cy; qTail++;
           autoFloodX[qTail] = cx - 2; autoFloodY[qTail] = cy; qTail++;
@@ -720,10 +776,21 @@ function findBorderBlobs(data, W, H) {
           autoFloodX[qTail] = cx; autoFloodY[qTail] = cy - 2; qTail++;
         }
       }
-      if (cnt >= 3 && cnt <= 250) {
-        blobs.push({ x: sx / cnt, y: sy / cnt, size: cnt });
-      }
+      if (cnt < 3 || cnt > 250) continue;
+
+      // хрестик-стібок компактний (приблизно квадратний обрис), а тінь
+      // чи край предмета зазвичай витягнуті в один бік — відкидаємо
+      const bboxW = maxX - minX + 1, bboxH = maxY - minY + 1;
+      const aspect = Math.max(bboxW, bboxH) / Math.max(1, Math.min(bboxW, bboxH));
+      if (aspect > 3) { rejectedElongated++; continue; }
+
+      if (!isIsolatedOnBackground(data, W, H, minX, maxX, minY, maxY, thresh)) { rejectedNotIsolated++; continue; }
+
+      blobs.push({ x: sx / cnt, y: sy / cnt, size: cnt });
     }
+  }
+  if (rejectedElongated || rejectedNotIsolated) {
+    log(`Автодетект: відсіяно ${rejectedElongated} витягнутих і ${rejectedNotIsolated} неізольованих плям (не рамка).`);
   }
   return blobs;
 }
@@ -815,7 +882,6 @@ function computeAgreement(quadResults, capacity) {
   return sumAgree / (capacity * 4);
 }
 
-const AUTO_MIN_BLOBS = 8;                       // мінімум знайдених цяток рамки, щоб довіряти геометрії
 const AUTO_MAX_DIAG_RATIO_DEV = 0.25;           // допустима відносна різниця довжин двох діагоналей
 const AUTO_MIN_DIAG_PX = 60;                    // занадто малий ромб на кадрі — або шум, або задалеко
 const AUTO_MAX_DIAG_PX = ANALYSIS_SIZE * 0.98;  // занадто великий — вишивка притиснута впритул до камери
@@ -830,6 +896,15 @@ function autoDetectAndDecode() {
   }
 
   try {
+    // Q читаємо одразу — від нього залежить, скільки цяток рамки взагалі
+    // очікувати (більший сектор -> довший периметр -> більше цяток).
+    const Q = parseInt(document.getElementById('qSize').value);
+    const expectedDots = expectedBorderDotCount(Q);
+    // вимагаємо знайти хоча б ~35% від очікуваної кількості — цятки на
+    // дальній від камери стороні ромба природно розпізнаються гірше
+    // (перспектива, фокус), тож 100% недосяжна вимога
+    const minBlobsNeeded = Math.max(6, Math.round(expectedDots * 0.35));
+
     const vw = video.videoWidth, vh = video.videoHeight;
     if (vw && vh) {
       const sSize = Math.min(vw, vh);
@@ -841,10 +916,11 @@ function autoDetectAndDecode() {
 
     const img = analysisCtxAuto.getImageData(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
     const data = img.data;
+    const thresh = computeAdaptiveThreshold(data);
 
-    const blobs = findBorderBlobs(data, ANALYSIS_SIZE, ANALYSIS_SIZE);
-    if (blobs.length < AUTO_MIN_BLOBS) {
-      status.textContent = `Шукаю рамку... (знайдено лише ${blobs.length} цяток)`;
+    const blobs = findBorderBlobs(data, ANALYSIS_SIZE, ANALYSIS_SIZE, thresh);
+    if (blobs.length < minBlobsNeeded) {
+      status.textContent = `Шукаю рамку... (знайдено ${blobs.length} з ${expectedDots} очікуваних цяток)`;
       return;
     }
 
@@ -874,7 +950,6 @@ function autoDetectAndDecode() {
       return;
     }
 
-    const Q = parseInt(document.getElementById('qSize').value);
     const scale = diagAvg / borderDiagonalUnits(Q);
     const baseAngle = Math.atan2(N.y - center.y, N.x - center.x);
     const sampleRadius = Math.max(1, Math.round(CELL * 0.28 * scale));
@@ -888,11 +963,16 @@ function autoDetectAndDecode() {
     const groundTruth = new Array(capacity).fill(0);
     for (let k = 0; k < activeCount; k++) groundTruth[order[k]] = bits[k];
 
-    // рамка симетрична під поворотом на 90° — перебираємо 4 гіпотези,
-    // яка з 4 вершин ромба насправді відповідає "нульовому" куту схеми,
-    // і довіряємо тій, де сектори найкраще узгоджуються між собою
-    let best = null;
-    for (let k = 0; k < 4; k++) {
+    // Рамка сама по собі симетрична під поворотом на 90°, АЛЕ за
+    // стандартних налаштувань поворотів секторів (TL=0°, TR=90°,
+    // BR=180°, BL=270° — саме так побудований весь дизайн вишиванки),
+    // це не проблема, а особливість: фізичний поворот кадру на 90°
+    // математично тотожний зсуву цих індексів на 1, тобто ВЕСЬ
+    // візерунок є повністю інваріантним під поворотом на 90°. Тому
+    // перша спроба (k=0) майже завжди вже правильна. Решту 3 варіанти
+    // пробуємо лише як резерв — якщо секторам хтось задав нестандартні
+    // (несиметричні) повороти вручну, або освітлення зараз погане.
+    function tryOrientation(k) {
       const localCornerAngle = Math.PI / 4 + k * (Math.PI / 2);
       const totalAngle = baseAngle - localCornerAngle;
       const cosA = Math.cos(totalAngle), sinA = Math.sin(totalAngle);
@@ -901,11 +981,18 @@ function autoDetectAndDecode() {
         y: center.y + scale * (lx * sinA + ly * cosA)
       });
       const { results: quadReadings } = sampleBitsWithTransform(data, ANALYSIS_SIZE, ANALYSIS_SIZE, Q, quadMap, toCanvasFn, sampleRadius);
-      const agreement = computeAgreement(quadReadings, capacity);
-      if (!best || agreement > best.agreement) best = { k, agreement, quadReadings };
+      return { k, agreement: computeAgreement(quadReadings, capacity), quadReadings };
     }
 
-    log(`Автодетект: цяток=${blobs.length}, центр=(${center.x.toFixed(0)},${center.y.toFixed(0)}), масштаб=${scale.toFixed(3)}, dNS=${dNS.toFixed(1)}, dEW=${dEW.toFixed(1)} — орієнтація #${best.k}, узгодженість=${(best.agreement * 100).toFixed(1)}%.`);
+    let best = tryOrientation(0);
+    if (best.agreement < AUTO_MIN_AGREEMENT) {
+      for (let k = 1; k < 4; k++) {
+        const candidate = tryOrientation(k);
+        if (candidate.agreement > best.agreement) best = candidate;
+      }
+    }
+
+    log(`Автодетект: цяток=${blobs.length}/${expectedDots}, поріг=${thresh.toFixed(0)}, центр=(${center.x.toFixed(0)},${center.y.toFixed(0)}), масштаб=${scale.toFixed(3)}, dNS=${dNS.toFixed(1)}, dEW=${dEW.toFixed(1)} — орієнтація #${best.k}, узгодженість=${(best.agreement * 100).toFixed(1)}%.`);
 
     if (best.agreement < AUTO_MIN_AGREEMENT) {
       status.textContent = `Знайшов рамку, але сектори не узгоджені (${(best.agreement * 100).toFixed(0)}%) — тримай рівніше й чекай.`;
