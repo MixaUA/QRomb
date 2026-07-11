@@ -684,6 +684,7 @@ let scanTimer = null;
 let locked = false;
 let lastDecodedSnapshot = null;   // dataURL кадру, на якому сталося декодування
 let lastDecodedData = null;       // повний об'єкт для JSON-експорту
+let debugHistory = [];            // накопичені спроби — щоб можна було зібрати кілька тестів в один JSON
 
 async function toggleCamera() {
   const btn = document.getElementById('camToggleBtn');
@@ -883,7 +884,8 @@ function decodeFromFit(imgData, W, H, rect) {
     html += `<div class="final-result"><div class="label">Голосування більшості (${votedAcc}% точності)</div>"${escapeHtml(votedText)}"</div>`;
     html += `<div class="btn-row" style="margin-top:10px">`;
     html += `<button class="secondary" onclick="rescan()">Сканувати ще раз</button>`;
-    html += `<button class="secondary" onclick="exportDebugJSON()">📦 Експорт JSON для дебагу</button>`;
+    html += `<button class="secondary" onclick="exportDebugJSON()">📦 Експорт JSON для дебагу (${debugHistory.length + 1} спроб)</button>`;
+    html += `<button class="secondary" style="margin-top:6px" onclick="clearDebugHistory()">🗑 Очистити історію спроб</button>`;
     html += `</div>`;
     document.getElementById('camResultsBox').innerHTML = html;
     document.getElementById('camStatus').textContent = 'Декодовано. Натисни "Сканувати ще раз" для повтору.';
@@ -920,7 +922,8 @@ function decodeFromFit(imgData, W, H, rect) {
       snapshot: lastDecodedSnapshot,
       logsTail: document.getElementById('logBox').value.split('\n').slice(-40)
     };
-    log(`Дані для дебагу зібрано (${errors.length} помилок у голосуванні).`);
+    debugHistory.push(lastDecodedData);
+    log(`Дані для дебагу зібрано (${errors.length} помилок у голосуванні). Всього в історії: ${debugHistory.length}.`);
   } catch (e) {
     log(`ПОМИЛКА декодування: ${e.name}: ${e.message}`);
     document.getElementById('camResultsBox').innerHTML = `<div style="color:#ff8f8f">Помилка: ${escapeHtml(e.message)}</div>`;
@@ -947,31 +950,42 @@ function clearLogFn() {
 }
 
 function exportDebugJSON() {
-  if (!lastDecodedData) {
-    alert('Немає даних для експорту. Спочатку успішно декодуй патерн.');
+  if (debugHistory.length === 0) {
+    alert('Немає даних для експорту. Спочатку успішно декодуй патерн хоча б раз.');
     return;
   }
   try {
-    const json = JSON.stringify(lastDecodedData, null, 2);
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      runsCount: debugHistory.length,
+      runs: debugHistory
+    };
+    const json = JSON.stringify(payload, null, 2);
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    a.download = `vyshyvanka-debug-${ts}.json`;
+    a.download = `vyshyvanka-debug-${debugHistory.length}runs-${ts}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    log(`JSON експортовано: ${a.download} (${(json.length / 1024).toFixed(1)} KB).`);
+    log(`JSON експортовано: ${a.download} (${debugHistory.length} спроб, ${(json.length / 1024).toFixed(1)} KB).`);
   } catch (e) {
     log(`ПОМИЛКА експорту JSON: ${e.message}`);
     alert('Не вдалося експортувати: ' + e.message);
   }
 }
 
+function clearDebugHistory() {
+  debugHistory = [];
+  log('Історію дебаг-спроб очищено.');
+}
+
 window.rescan = rescan;
 window.exportDebugJSON = exportDebugJSON;
+window.clearDebugHistory = clearDebugHistory;
 
 document.getElementById('qSize').addEventListener('input', (e) => {
   document.getElementById('qSizeVal').textContent = e.target.value;
