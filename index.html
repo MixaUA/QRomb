@@ -508,6 +508,7 @@ const SQUARENESS_TOLERANCE = 0.10; // макс. 10% різниці між шир
 const MAX_FIT_ERROR_RATIO = 0.5;   // макс. похибка як частка CELL
 const MIN_HULL_POINTS = 8;
 const MIN_SQUARE_SIDE_PX = 60;     // занадто мало — це шум, не рамка
+const MAX_ANALYSIS_SIZE = 640;     // верхня межа роздільності аналізу (баланс швидкодія/дальність)
 const MAX_SQUARE_SIDE_PX_RATIO = 0.98; // відносно розміру кадру
 
 // Дизайн завжди малює квадрат повернутим на 45° (щоб виглядав ромбом) —
@@ -766,12 +767,20 @@ function scanFrame() {
   const wrap = document.getElementById('camWrap');
   if (!camStream || video.readyState < 2) return;
 
-  const size = wrap.clientWidth || 320;
+  // ВАЖЛИВО: розмір аналізу більше НЕ дорівнює маленькому розміру
+  // прев'ю-віконця на екрані (wrap.clientWidth, зазвичай ~320-360px через
+  // CSS max-width) — це викидало три чверті реальної роздільності камери
+  // ще до аналізу, тому й доводилось підносити вишивку впритул. Тепер
+  // беремо повну роздільність відео (те, що реально дає getUserMedia,
+  // напр. 720×720), з розумним обмеженням зверху заради швидкодії.
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const nativeSize = vw && vh ? Math.min(vw, vh) : 320;
+  const size = Math.min(nativeSize, MAX_ANALYSIS_SIZE);
+
   const canvas = document.createElement('canvas');
   canvas.width = size; canvas.height = size;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  const vw = video.videoWidth, vh = video.videoHeight;
   if (vw && vh) {
     const sSize = Math.min(vw, vh);
     const sx = (vw - sSize) / 2, sy = (vh - sSize) / 2;
