@@ -6,32 +6,32 @@
 <title>Ромб-вишиванка — автодетекція камерою</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; background: #0b3d63; color: #fff; font-family: sans-serif; padding: 20px 12px 60px; }
+  body { margin: 0; min-height: 100vh; background: #ffffff; color: #1a1a1a; font-family: sans-serif; padding: 20px 12px 60px; }
   h1 { font-size: 16px; text-align: center; margin: 0 0 4px; font-weight: 600; }
-  .subtitle { text-align: center; font-size: 12px; color: rgba(255,255,255,0.6); margin-bottom: 20px; }
+  .subtitle { text-align: center; font-size: 12px; color: rgba(0,0,0,0.6); margin-bottom: 20px; }
   .wrap { max-width: 480px; margin: 0 auto; }
-  .panel { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
-  label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(255,255,255,0.7); margin-bottom: 4px; }
-  input[type=text] { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.08); color: #fff; font-size: 14px; margin-bottom: 12px; }
-  select { flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.08); color: #fff; font-size: 13px; }
+  .panel { background: rgba(0,0,0,0.04); border: 1px solid rgba(0,0,0,0.15); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(0,0,0,0.7); margin-bottom: 4px; }
+  input[type=text] { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.3); background: #fff; color: #000; font-size: 14px; margin-bottom: 12px; }
+  select { flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.3); background: #fff; color: #000; font-size: 13px; }
   select option { color: #000; }
   .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .row label { flex: 0 0 130px; margin-bottom: 0; }
   .row input[type=range] { flex: 1; }
   .row .val { width: 44px; text-align: right; font-family: monospace; font-size: 12px; }
-  button { width: 100%; padding: 12px; border-radius: 8px; border: 2px solid rgba(255,255,255,0.6); background: transparent; color: #fff; font-size: 14px; cursor: pointer; margin-top: 8px; }
-  button:hover { background: rgba(255,255,255,0.1); }
-  button.secondary { border-color: rgba(255,255,255,0.3); font-size: 13px; }
-  canvas { display: block; margin: 0 auto; background: #08304f; border-radius: 8px; max-width: 100%; height: auto; }
+  button { width: 100%; padding: 12px; border-radius: 8px; border: 2px solid rgba(0,0,0,0.5); background: transparent; color: #1a1a1a; font-size: 14px; cursor: pointer; margin-top: 8px; }
+  button:hover { background: rgba(0,0,0,0.06); }
+  button.secondary { border-color: rgba(0,0,0,0.3); font-size: 13px; }
+  canvas { display: block; margin: 0 auto; background: #ffffff; border-radius: 8px; max-width: 100%; height: auto; }
   .canvas-box { text-align: center; }
-  .canvas-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(255,255,255,0.5); margin-top: 6px; }
+  .canvas-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(0,0,0,0.5); margin-top: 6px; }
   .results { font-family: monospace; font-size: 13px; line-height: 1.8; }
   .quad-line { display: flex; justify-content: space-between; gap: 8px; }
-  .quad-line .ok { color: #7fdb7f; }
-  .quad-line .bad { color: #ff8f8f; }
-  .final-result { font-size: 18px; text-align: center; padding: 14px; margin-top: 10px; background: rgba(255,255,255,0.08); border-radius: 8px; }
-  .final-result .label { font-size: 11px; color: rgba(255,255,255,0.6); text-transform: uppercase; margin-bottom: 4px; }
-  .capacity-note { font-size: 12px; color: rgba(255,255,255,0.55); margin-top: 6px; }
+  .quad-line .ok { color: #1a8a1a; }
+  .quad-line .bad { color: #c02020; }
+  .final-result { font-size: 18px; text-align: center; padding: 14px; margin-top: 10px; background: rgba(0,0,0,0.05); border-radius: 8px; }
+  .final-result .label { font-size: 11px; color: rgba(0,0,0,0.6); text-transform: uppercase; margin-bottom: 4px; }
+  .capacity-note { font-size: 12px; color: rgba(0,0,0,0.55); margin-top: 6px; }
   .cam-wrap { position: relative; width: 100%; max-width: 360px; margin: 0 auto; aspect-ratio: 1 / 1; background: #000; border-radius: 8px; overflow: hidden; }
   .cam-placeholder { position: absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; color: rgba(255,255,255,0.4); font-size: 12px; text-align:center; padding: 20px; }
   .cam-live { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; }
@@ -39,10 +39,10 @@
   .cam-wrap video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
   .cam-wrap canvas.overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; background: transparent; border-radius: 0; }
   .scan-status { position: absolute; bottom: 6px; left: 0; right: 0; text-align: center; font-size: 11px; font-family: monospace; color: #fff; text-shadow: 0 1px 3px #000; z-index: 3; }
-  .warn-note { font-size: 12px; color: #ffcf7f; margin-top: 6px; }
+  .warn-note { font-size: 12px; color: #a06b00; margin-top: 6px; }
   .btn-row { display: flex; gap: 8px; margin-top: 8px; }
   .btn-row button { margin-top: 0; }
-  textarea { width: 100%; height: 220px; font-family: monospace; font-size: 11px; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; padding: 8px; resize: vertical; }
+  textarea { width: 100%; height: 220px; font-family: monospace; font-size: 11px; background: #fff; color: #000; border: 1px solid rgba(0,0,0,0.3); border-radius: 6px; padding: 8px; resize: vertical; }
 </style>
 </head>
 <body>
@@ -798,10 +798,17 @@ function scanFrame() {
 
   if (stable) {
     locked = true;
-    // Зберігаємо кадр, на якому відбувається декод (для дебагу)
+    // Зберігаємо кадр для дебагу — зменшену версію в JPEG, а не повний PNG:
+    // PNG повного розміру важив ~220KB на кадр (майже весь розмір експортованого
+    // файлу), тоді як стиснутий у 2 рази менший JPEG важить у 10-20 разів менше,
+    // а деталей достатньо, щоб на око оцінити контраст/освітлення.
     try {
-      lastDecodedSnapshot = canvas.toDataURL('image/png');
-      log(`Кадр збережено для дебагу (${lastDecodedSnapshot.length} байт base64).`);
+      const thumbCanvas = document.createElement('canvas');
+      thumbCanvas.width = Math.round(canvas.width / 2);
+      thumbCanvas.height = Math.round(canvas.height / 2);
+      thumbCanvas.getContext('2d').drawImage(canvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+      lastDecodedSnapshot = thumbCanvas.toDataURL('image/jpeg', 0.7);
+      log(`Кадр збережено для дебагу (${lastDecodedSnapshot.length} байт base64, зменшено вдвічі + JPEG).`);
     } catch (e) {
       log(`Попередження: не вдалося зробити snapshot кадру: ${e.message}`);
       lastDecodedSnapshot = null;
