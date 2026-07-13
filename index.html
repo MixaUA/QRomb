@@ -625,6 +625,40 @@ function resetStability() { recentFits = []; }
 // саме — тому пробуємо всі 4 варіанти (див. computeAgreement нижче) і
 // обираємо той, де сектори даних найкраще узгоджуються між собою.
 // =====================================================================
+// Метод Отсу: перебираємо всі можливі пороги t між minL і maxL, для
+// кожного рахуємо міжкласову дисперсію (наскільки далеко один від одного
+// середні двох груп — "темніше за t" і "світліше за t" — зважено на їхні
+// розміри), і обираємо t, що її максимізує. Це і є поріг, який найкраще
+// розділяє реальний розподіл на 2 групи, замість наївного (min+max)/2,
+// який ламається, коли розподіл несиметричний або є викиди.
+function otsuThreshold(lums, minL, maxL) {
+  if (maxL <= minL) return (minL + maxL) / 2;
+  const nBins = 256;
+  const hist = new Array(nBins).fill(0);
+  for (const l of lums) {
+    let bin = Math.round(l);
+    if (bin < 0) bin = 0; if (bin > 255) bin = 255;
+    hist[bin]++;
+  }
+  const total = lums.length;
+  let sumAll = 0;
+  for (let i = 0; i < nBins; i++) sumAll += i * hist[i];
+
+  let sumB = 0, wB = 0, bestVar = -1, bestT = (minL + maxL) / 2;
+  for (let t = 0; t < nBins; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const meanB = sumB / wB;
+    const meanF = (sumAll - sumB) / wF;
+    const betweenVar = wB * wF * (meanB - meanF) * (meanB - meanF);
+    if (betweenVar > bestVar) { bestVar = betweenVar; bestT = t; }
+  }
+  return bestT;
+}
+
 function sampleFromFit(imgData, W, H, Q, quadMap, rect, angleOffsetRad) {
   angleOffsetRad = angleOffsetRad || 0;
   const data = imgData.data;
@@ -661,7 +695,13 @@ function sampleFromFit(imgData, W, H, Q, quadMap, rect, angleOffsetRad) {
     }
   let minL = 255, maxL = 0;
   for (const l of sampledLums) { if (l < minL) minL = l; if (l > maxL) maxL = l; }
-  const threshold = (minL + maxL) / 2;
+  // Отсу замість простого мідпоінта (min+max)/2: реальні дані показали, що
+  // проста середина між крайніми значеннями систематично неправильно ділить
+  // клітинки — червоні стібки даних (яскравіші за чорну рамку) масово
+  // потрапляли у "фон", тому що min/max — це лише 2 точки, чутливі до
+  // викидів, а не форма всього розподілу. Отсу шукає поріг, що найкраще
+  // розділяє РЕАЛЬНИЙ розподіл яскравостей на 2 кластери — набагато стійкіше.
+  const threshold = otsuThreshold(sampledLums, minL, maxL);
 
   const debugPoints = [];
 
@@ -679,7 +719,7 @@ function sampleFromFit(imgData, W, H, Q, quadMap, rect, angleOffsetRad) {
           const bit = l < threshold ? 1 : 0;
           const base = rotateIndex(rx, ry, Q, qIdx);
           bitsForQuad[base.y * Q + base.x] = bit;
-          debugPoints.push({ x: p.x, y: p.y, bit });
+          debugPoints.push({ x: p.x, y: p.y, bit, lum: Math.round(l * 10) / 10 });
         }
       }
       results[qIdx] = bitsForQuad;
@@ -1101,4 +1141,4 @@ generateSchema();
 log('Ініціалізація завершена. Готово до тесту.');
 </script>
 </body>
-</html>
+ </html>
