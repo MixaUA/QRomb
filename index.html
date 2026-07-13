@@ -516,7 +516,9 @@ const SQUARENESS_TOLERANCE = 0.10; // макс. 10% різниці між шир
 const MAX_FIT_ERROR_RATIO = 0.5;   // макс. похибка як частка CELL
 const MIN_HULL_POINTS = 8;
 const MIN_SQUARE_SIDE_PX = 60;     // занадто мало — це шум, не рамка
-const MAX_ANALYSIS_SIZE = 640;     // верхня межа роздільності аналізу (баланс швидкодія/дальність)
+const MAX_ANALYSIS_SIZE = 360;     // повернуто назад — вища роздільність (640) погіршила
+// розпізнавання: MIN_BLOB_SIZE/MAX_BLOB_SIZE і halo-радіус ізольованості лишились
+// абсолютними числами в пікселях і не масштабувались разом зі зміною роздільності
 const MAX_SQUARE_SIDE_PX_RATIO = 0.65; // відносно розміру кадру — було 0.98,
 // занадто дозволяло рамці монітора/вікна браузера (майже весь кадр) пройти
 // як "знайдений ромб". Реальна вишивка/схема на екрані, знята з нормальної
@@ -791,12 +793,18 @@ function drawOverlay(W, H, fit, statusText) {
   octx.clearRect(0, 0, W, H);
   if (fit && fit.rect) {
     const r = fit.rect;
+    // Малюємо ЗАВЖДИ справжній квадрат (рівні сторони), а не сирі виміряні
+    // width/height — саме ця різниця (сира ширина/висота кандидата) і
+    // виглядала як "рамка розтягується в різні боки". Для людини, що
+    // вирівнює вишивку, важливо бачити стабільний орієнтир-ромб, а не
+    // сирі проміжні виміри до того, як вони стабілізувались.
+    const avgSide = (r.width + r.height) / 2;
     octx.save();
     octx.translate(r.cx, r.cy);
     octx.rotate(r.angle);
     octx.strokeStyle = fit.ok ? 'rgba(120,220,120,0.9)' : 'rgba(255,200,80,0.7)';
     octx.lineWidth = 2;
-    octx.strokeRect(-r.width/2, -r.height/2, r.width, r.height);
+    octx.strokeRect(-avgSide/2, -avgSide/2, avgSide, avgSide);
     octx.restore();
   }
   document.getElementById('scanStatusOverlay').textContent = statusText || '';
@@ -857,7 +865,11 @@ function scanFrame() {
       trackedMissCount++;
       if (trackedMissCount >= TRACKING_LOST_AFTER) resetTracking();
     }
-    drawOverlay(size, size, fit, `Шукаю рамку... (${fit.reason})`);
+    // не малюємо прямокутник для кандидата, що взагалі не схожий на ромб
+    // (паралельний краям кадру) — це вводить в оману, ніби система щось
+    // "знайшла", хоча це просто випадковий прямий об'єкт (рамка монітора тощо)
+    const looksLikeDiamond = fit.angleDev !== undefined && fit.angleDev <= MAX_ANGLE_DEVIATION_DEG;
+    drawOverlay(size, size, looksLikeDiamond ? fit : null, `Шукаю рамку... (${fit.reason})`);
     document.getElementById('camStatus').textContent = `Пошук: ${fit.reason}`;
     return;
   }
