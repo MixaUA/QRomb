@@ -315,6 +315,7 @@ function generateSchema() {
   // навіть коли перед нею вже фізично інший малюнок.
   locked = false;
   resetStability();
+  resetTracking();
   document.getElementById('camResultsBox').innerHTML = '';
   if (camStream) document.getElementById('camStatus').textContent = 'Схему оновлено — шукаю рамку заново...';
 }
@@ -445,7 +446,7 @@ function isIsolatedOnBackground(data, W, H, minX, maxX, minY, maxY, threshold) {
   return total > 0 && (lightCount / total) >= 0.6;
 }
 
-function findDarkBlobs(imgData, W, H, step, threshold) {
+function findDarkBlobs(imgData, W, H, step, threshold, region) {
   const data = imgData.data;
   const visited = new Uint8Array(W * H);
   const qx = new Int32Array(FLOOD_CAP);
@@ -458,8 +459,15 @@ function findDarkBlobs(imgData, W, H, step, threshold) {
     return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
   }
 
-  for (let y = 0; y < H; y += step) {
-    for (let x = 0; x < W; x += step) {
+  // region: {x0,y0,x1,y1} — якщо передано (трекінг після попередньої знахідки),
+  // скануємо тільки цю ділянку, а не весь кадр щоразу заново
+  const scanX0 = region ? Math.max(0, region.x0) : 0;
+  const scanY0 = region ? Math.max(0, region.y0) : 0;
+  const scanX1 = region ? Math.min(W, region.x1) : W;
+  const scanY1 = region ? Math.min(H, region.y1) : H;
+
+  for (let y = scanY0; y < scanY1; y += step) {
+    for (let x = scanX0; x < scanX1; x += step) {
       if (visited[y * W + x]) continue;
       if (!isDark(lumAt(x, y), threshold)) continue;
       qx[0] = x; qy[0] = y;
@@ -509,7 +517,16 @@ const MAX_FIT_ERROR_RATIO = 0.5;   // макс. похибка як частка
 const MIN_HULL_POINTS = 8;
 const MIN_SQUARE_SIDE_PX = 60;     // занадто мало — це шум, не рамка
 const MAX_ANALYSIS_SIZE = 640;     // верхня межа роздільності аналізу (баланс швидкодія/дальність)
-const MAX_SQUARE_SIDE_PX_RATIO = 0.98; // відносно розміру кадру
+const MAX_SQUARE_SIDE_PX_RATIO = 0.65; // відносно розміру кадру — було 0.98,
+// занадто дозволяло рамці монітора/вікна браузера (майже весь кадр) пройти
+// як "знайдений ромб". Реальна вишивка/схема на екрані, знята з нормальної
+// відстані, займає помітно меншу частку кадру.
+
+// Наскільки далеко від ЦЕНТРУ кадру може бути знайдений квадрат — людина
+// природньо цілиться в центр, коли фотографує, тож справжня рамка майже
+// завжди там. Це відсіює випадкові об'єкти скраю кадру (рамка монітора,
+// край столу) навіть якщо вони випадково пройшли перевірку форми/кута.
+const MAX_CENTER_OFFSET_RATIO = 0.30; // частка від half-diagonal кадру
 
 // Дизайн завжди малює квадрат повернутим на 45° (щоб виглядав ромбом) —
 // тому фізична рамка в кадрі теж має бути близько до 45° (чи еквівалентно
@@ -525,9 +542,9 @@ function angleDeviationFromDiamond(angleRad) {
   return d;
 }
 
-function detectSquare(imgData, W, H) {
+function detectSquare(imgData, W, H, region) {
   const darkThreshold = computeAdaptiveDarkThreshold(imgData, W, H);
-  const blobs = findDarkBlobs(imgData, W, H, 3, darkThreshold);
+  const blobs = findDarkBlobs(imgData, W, H, 3, darkThreshold, region);
   if (blobs.length < MIN_HULL_POINTS) {
     return { ok: false, reason: `замало точок рамки (${blobs.length})`, blobCount: blobs.length };
   }
@@ -549,6 +566,12 @@ function detectSquare(imgData, W, H) {
   }
   if (avgSide > Math.min(W, H) * MAX_SQUARE_SIDE_PX_RATIO) {
     return { ok: false, reason: 'занадто близько (рамка не вміщується)', blobCount: blobs.length, rect, squareness, err, angleDev };
+  }
+  const frameCx = W / 2, frameCy = H / 2;
+  const centerOffset = Math.hypot(rect.cx - frameCx, rect.cy - frameCy);
+  const maxOffset = Math.hypot(W, H) / 2 * MAX_CENTER_OFFSET_RATIO;
+  if (centerOffset > maxOffset) {
+    return { ok: false, reason: `не по центру кадру (зсув ${centerOffset.toFixed(0)}px) — наведи рівніше`, blobCount: blobs.length, rect, squareness, err, angleDev };
   }
   if (angleDev > MAX_ANGLE_DEVIATION_DEG) {
     return { ok: false, reason: `не схоже на ромб (нахил ${angleDev.toFixed(0)}° від очікуваних 45°)`, blobCount: blobs.length, rect, squareness, err, angleDev };
@@ -683,6 +706,22 @@ function computeAgreement(quadResults, capacity) {
 let camStream = null;
 let scanTimer = null;
 let locked = false;
+
+// ===== ТРЕКІНГ МІСЦЯ ЗНАХІДКИ (той самий принцип, що в першому "диску") =====
+// Коли рамку вже щойно бачили десь у кадрі — наступний кадр шукаємо
+// СПЕРШУ в невеликому радіусі навколо того самого місця, а не заново по
+// всьому кадру. Це і стабільніше (менше шансів зачепити щось випадкове
+// збоку), і швидше. Якщо кілька кадрів поспіль там нічого нема — трекінг
+// "здається" і повертається до повного пошуку.
+const TRACKING_SEARCH_MARGIN = 80; // px запасу навколо попереднього прямокутника
+const TRACKING_LOST_AFTER = 6;     // кадрів без знахідки в трекінгу, перш ніж скинути
+let trackedCenter = null;
+let trackedMissCount = 0;
+
+function resetTracking() {
+  trackedCenter = null;
+  trackedMissCount = 0;
+}
 let lastDecodedSnapshot = null;   // dataURL кадру, на якому сталося декодування
 let lastDecodedData = null;       // повний об'єкт для JSON-експорту
 let debugHistory = [];            // накопичені спроби — щоб можна було зібрати кілька тестів в один JSON
@@ -717,6 +756,7 @@ async function toggleCamera() {
     btn.textContent = 'Вимкнути камеру';
     locked = false;
     resetStability();
+    resetTracking();
     scanTimer = setInterval(scanFrame, 250);
   } catch (e) {
     log(`ПОМИЛКА камери: ${e.name}: ${e.message}`);
@@ -737,6 +777,7 @@ function stopCamera() {
   document.getElementById('camStatus').textContent = 'Камеру вимкнено.';
   locked = false;
   resetStability();
+  resetTracking();
   const oc = document.getElementById('overlayCanvas');
   const octx = oc.getContext('2d');
   octx.clearRect(0, 0, oc.width, oc.height);
@@ -790,14 +831,40 @@ function scanFrame() {
   }
 
   const imgData = ctx.getImageData(0, 0, size, size);
-  const fit = detectSquare(imgData, size, size);
+
+  // якщо трекінг активний — шукаємо спершу тільки навколо попереднього місця
+  let region = null;
+  if (trackedCenter) {
+    const halfSide = (trackedCenter.side / 2) + TRACKING_SEARCH_MARGIN;
+    region = {
+      x0: trackedCenter.x - halfSide, y0: trackedCenter.y - halfSide,
+      x1: trackedCenter.x + halfSide, y1: trackedCenter.y + halfSide
+    };
+  }
+
+  let fit = detectSquare(imgData, size, size, region);
+
+  // трекінг нічого не знайшов у своєму вузькому регіоні — не здаємось одразу,
+  // пробуємо повний кадр цим самим кадром (дешево, кадр вже захоплено),
+  // і тільки якщо це теж не спрацює, рахуємо це промахом трекінгу
+  if (!fit.ok && region) {
+    fit = detectSquare(imgData, size, size, null);
+  }
 
   if (!fit.ok) {
     resetStability();
+    if (trackedCenter) {
+      trackedMissCount++;
+      if (trackedMissCount >= TRACKING_LOST_AFTER) resetTracking();
+    }
     drawOverlay(size, size, fit, `Шукаю рамку... (${fit.reason})`);
     document.getElementById('camStatus').textContent = `Пошук: ${fit.reason}`;
     return;
   }
+
+  // знайшли (в трекінгу чи повним пошуком) — запам'ятовуємо місце для наступного кадру
+  trackedCenter = { x: fit.rect.cx, y: fit.rect.cy, side: (fit.rect.width + fit.rect.height) / 2 };
+  trackedMissCount = 0;
 
   const stable = checkStability(fit);
   drawOverlay(size, size, fit, stable ? 'Знайдено, декодую...' : `Стабілізація... (${recentFits.length}/${CONFIRM_STREAK})`);
@@ -950,6 +1017,7 @@ function decodeFromFit(imgData, W, H, rect) {
 function rescan() {
   locked = false;
   resetStability();
+  resetTracking();
   document.getElementById('camResultsBox').innerHTML = '';
   document.getElementById('camStatus').textContent = 'Шукаю рамку...';
   log('--- Повторне сканування розпочато ---');
