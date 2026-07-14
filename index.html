@@ -58,12 +58,10 @@
     width: 100%; height: 100%;
     object-fit: cover;
   }
-  /* розмиває відео камери скрізь, окрім трикутника-гейда (дірка вирізається через clip-path) */
-  .blur-mask {
+  /* розмиває кадр камери скрізь, окрім трикутника-гейда (дірка вирізається на canvas через destination-out) */
+  #blurCanvas {
     position: absolute; top: 0; left: 0;
     width: 100%; height: 100%;
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
     pointer-events: none;
   }
   #decCanvas {
@@ -109,7 +107,7 @@
   <div class="card">
     <div class="decode-wrap">
       <video id="camVideo" autoplay playsinline muted></video>
-      <div class="blur-mask" id="blurMask"></div>
+      <canvas id="blurCanvas" width="340" height="340"></canvas>
       <canvas id="decCanvas" width="340" height="340"></canvas>
     </div>
     <div class="status" id="decStatus">Радар вимкнено</div>
@@ -274,11 +272,33 @@ const TEMPLATE_VERTICES = TEMPLATE_ANGLES.map(a => ({
 // масштаб переводу кодерських радіусів (простір 480px, ANCHOR_R=200) у простір аналізу (340px)
 const TEMPLATE_SCALE = TEMPLATE_R / ANCHOR_R;
 
-const VERTEX_SAMPLE_RADIUS = 9;   // px у просторі аналізу — область навколо кожної вершини шаблону
-const VERTEX_SAMPLE_STEP = 3;
-const VERTEX_MARK_FRACTION = 0.5; // яка частка точок у зоні має бути "яскравою", щоб рахувати якір знайденим
-
 const DISC_POLARITY = 'light'; // біла руна на темному тлі
+
+/* ================================================================
+   ЛОКАЛЬНИЙ ПОШУК ЯКОРЯ НАВКОЛО КОЖНОЇ ВЕРШИНИ ШАБЛОНУ.
+   Вимагати збіг у точці — нереалістично для руки, що тримає диск.
+   Тому шукаємо пляму в невеликому вікні навколо очікуваної вершини —
+   але приймаємо кандидата, лише якщо його відстань від центру диска
+   відповідає радіусу якорів, а не кілець даних. Кільця завжди
+   суттєво ближче до центру (OUTER_R), тому цей радіальний фільтр
+   відсікає клітинки даних, навіть якщо вікно пошуку їх торкається.
+   ================================================================ */
+const SEARCH_WINDOW_R = 34;       // px у просторі аналізу — половина сторони вікна пошуку
+const EXPECTED_ANCHOR_PX_R = ANCHOR_SIZE * TEMPLATE_SCALE;
+const EXPECTED_ANCHOR_AREA = Math.PI * EXPECTED_ANCHOR_PX_R * EXPECTED_ANCHOR_PX_R;
+const MIN_BLOB_AREA = EXPECTED_ANCHOR_AREA * 0.25;
+const MAX_BLOB_AREA = EXPECTED_ANCHOR_AREA * 4;
+const MIN_COMPACTNESS = 0.5; // cnt / (bboxW*bboxH); коло ≈ 0.785, клітинки/дуги — нижче
+// радіальна смуга: анкер очікується на TEMPLATE_R, кільця — не далі OUTER_R*TEMPLATE_SCALE
+const MIN_ANCHOR_RADIUS = OUTER_R * TEMPLATE_SCALE + 4;
+const MAX_ANCHOR_RADIUS = TEMPLATE_R + SEARCH_WINDOW_R;
+
+const FLOOD_QUEUE_CAP = 4000;
+const floodQueueX = new Int32Array(FLOOD_QUEUE_CAP);
+const floodQueueY = new Int32Array(FLOOD_QUEUE_CAP);
+const visitedBuf = new Uint8Array(ANALYSIS_SIZE * ANALYSIS_SIZE);
+
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
 const CONFIRM_STREAK = 3;
 const LOCK_HOLD_MS = 550;
@@ -322,21 +342,27 @@ function animateOverlay() {
   overlayAnimFrame = requestAnimationFrame(animateOverlay);
 }
 
-/* підганяє "дірку" розмиття під фактичний розмір decode-wrap на екрані
-   (координати шаблону задані в просторі ANALYSIS_SIZE, тут перераховуємо в CSS-пікселі) */
-function updateBlurMaskClip() {
-  const mask = document.getElementById('blurMask');
-  const wrap = mask.parentElement;
-  const w = wrap.clientWidth, h = wrap.clientHeight;
-  if (!w || !h) return;
-  const sx = w / ANALYSIS_SIZE, sy = h / ANALYSIS_SIZE;
-  const pts = TEMPLATE_VERTICES.map(v => `${(v.x * sx).toFixed(1)},${(v.y * sy).toFixed(1)}`);
-  const d = `M0,0 H${w} V${h} H0 Z M${pts[0]} L${pts[1]} L${pts[2]} Z`;
-  const clip = `path(evenodd, '${d}')`;
-  mask.style.clipPath = clip;
-  mask.style.webkitClipPath = clip;
+/* малює розмитий кадр камери на окремому canvas і "вирізає" трикутну дірку
+   через destination-out — надійніше за CSS clip-path(evenodd), який частина
+   браузерів відкидає повністю замість деградації до звичайного розмиття */
+const blurCanvasEl = document.getElementById('blurCanvas');
+const blurCtx = blurCanvasEl.getContext('2d');
+
+function drawBlurLayer() {
+  blurCtx.clearRect(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+  blurCtx.save();
+  blurCtx.filter = 'blur(8px)';
+  blurCtx.drawImage(analysisCanvas, 0, 0);
+  blurCtx.restore();
+
+  blurCtx.save();
+  blurCtx.globalCompositeOperation = 'destination-out';
+  blurCtx.beginPath();
+  TEMPLATE_VERTICES.forEach((p, i) => { if (i === 0) blurCtx.moveTo(p.x, p.y); else blurCtx.lineTo(p.x, p.y); });
+  blurCtx.closePath();
+  blurCtx.fill();
+  blurCtx.restore();
 }
-window.addEventListener('resize', updateBlurMaskClip);
 
 async function startCam() {
   try {
@@ -351,7 +377,6 @@ async function startCam() {
     locking = false;
     setStatus('Сумісти диск із трикутником...', '');
     document.getElementById('decResult').innerHTML = '';
-    updateBlurMaskClip();
     scanTimer = setInterval(scanFrame, 220);
     if (overlayAnimFrame) cancelAnimationFrame(overlayAnimFrame);
     overlayAnimFrame = requestAnimationFrame(animateOverlay);
@@ -392,6 +417,7 @@ function scanFrame() {
     analysisCtx.drawImage(video, 0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
   }
 
+  drawBlurLayer();
   tryDecode();
 }
 
@@ -417,19 +443,54 @@ function tryDecode() {
     : Math.min(115, avgLum * 0.76);
   function isMark(l) { return DISC_POLARITY === 'light' ? l > THRESH : l < THRESH; }
 
-  // --- КРОК 1: чи всі 3 кути фіксованого шаблону накриті яскравими якорями ---
-  let hits = 0;
-  for (const v of TEMPLATE_VERTICES) {
-    let markCount = 0, sampleCount = 0;
-    for (let dy = -VERTEX_SAMPLE_RADIUS; dy <= VERTEX_SAMPLE_RADIUS; dy += VERTEX_SAMPLE_STEP) {
-      for (let dx = -VERTEX_SAMPLE_RADIUS; dx <= VERTEX_SAMPLE_RADIUS; dx += VERTEX_SAMPLE_STEP) {
-        if (dx * dx + dy * dy > VERTEX_SAMPLE_RADIUS * VERTEX_SAMPLE_RADIUS) continue;
-        sampleCount++;
-        if (isMark(lum(v.x + dx, v.y + dy))) markCount++;
+  // --- КРОК 1: пошук якоря у вікні навколо кожної вершини шаблону ---
+  visitedBuf.fill(0);
+
+  function findAnchorInWindow(wx, wy, radius) {
+    const x0 = Math.max(0, Math.round(wx - radius)), x1 = Math.min(ANALYSIS_SIZE - 1, Math.round(wx + radius));
+    const y0 = Math.max(0, Math.round(wy - radius)), y1 = Math.min(ANALYSIS_SIZE - 1, Math.round(wy + radius));
+    let best = null, bestCnt = 0;
+
+    for (let y = y0; y <= y1; y += 2) {
+      for (let x = x0; x <= x1; x += 2) {
+        if (visitedBuf[y * ANALYSIS_SIZE + x] || !isMark(lum(x, y))) continue;
+
+        floodQueueX[0] = x; floodQueueY[0] = y;
+        let qHead = 0, qTail = 1;
+        let sx = 0, sy = 0, cnt = 0;
+        let minX = x, maxX = x, minY = y, maxY = y;
+        while (qHead < qTail && cnt < FLOOD_QUEUE_CAP - 4) {
+          const cx = floodQueueX[qHead], cy = floodQueueY[qHead]; qHead++;
+          if (cx < x0 || cx > x1 || cy < y0 || cy > y1) continue;
+          if (visitedBuf[cy * ANALYSIS_SIZE + cx] || !isMark(lum(cx, cy))) continue;
+          visitedBuf[cy * ANALYSIS_SIZE + cx] = 1;
+          sx += cx; sy += cy; cnt++;
+          if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+          floodQueueX[qTail] = cx + 2; floodQueueY[qTail] = cy; qTail++;
+          floodQueueX[qTail] = cx - 2; floodQueueY[qTail] = cy; qTail++;
+          floodQueueX[qTail] = cx; floodQueueY[qTail] = cy + 2; qTail++;
+          floodQueueX[qTail] = cx; floodQueueY[qTail] = cy - 2; qTail++;
+        }
+        if (cnt < 4) continue;
+
+        const bboxW = (maxX - minX) || 1, bboxH = (maxY - minY) || 1;
+        const compactness = cnt / (bboxW * bboxH);
+        const ccx = sx / cnt, ccy = sy / cnt;
+        const radiusFromCenter = Math.hypot(ccx - TEMPLATE_CX, ccy - TEMPLATE_CY);
+
+        if (cnt < MIN_BLOB_AREA || cnt > MAX_BLOB_AREA) continue;
+        if (compactness < MIN_COMPACTNESS) continue;
+        if (radiusFromCenter < MIN_ANCHOR_RADIUS || radiusFromCenter > MAX_ANCHOR_RADIUS) continue;
+
+        if (cnt > bestCnt) { bestCnt = cnt; best = { x: ccx, y: ccy }; }
       }
     }
-    if (sampleCount > 0 && markCount / sampleCount >= VERTEX_MARK_FRACTION) hits++;
+    return best;
   }
+
+  const detected = TEMPLATE_VERTICES.map(v => findAnchorInWindow(v.x, v.y, SEARCH_WINDOW_R));
+  const hits = detected.filter(Boolean).length;
 
   if (hits < 3) {
     templateActive = false;
@@ -439,19 +500,27 @@ function tryDecode() {
   }
   templateActive = true;
 
-  // --- КРОК 2: зчитування 10 кілець (6 унікальних + 6 дзеркальних), геометрія фіксована ---
+  // --- КРОК 2: реальна геометрія диска з фактично знайдених якорів (не з шаблону) ---
+  const [bottomA, upperA, upperB] = detected; // порядок збігається з TEMPLATE_VERTICES: 0 = низ
+  const cx = (bottomA.x + upperA.x + upperB.x) / 3;
+  const cy = (bottomA.y + upperA.y + upperB.y) / 3;
+  const currentRotation = Math.atan2(bottomA.y - cy, bottomA.x - cx);
+  const avgSide = (dist(bottomA, upperA) + dist(upperA, upperB) + dist(bottomA, upperB)) / 3;
+  const scale = avgSide / (ANCHOR_R * Math.sqrt(3));
+
+  // --- КРОК 3: зчитування 10 кілець (6 унікальних + 6 дзеркальних) ---
   const dc = document.getElementById('decCanvas');
   const overlayCtx = dc.getContext('2d'); // точки семплів малюємо тим самим ctx, що й анімація оверлею
   const indices = [];
   let totalMismatches = 0;
 
   for (let ring = 0; ring < RINGS; ring++) {
-    const ringMidR = (INNER_R + (ring + 0.5) * RING_GAP) * TEMPLATE_SCALE;
+    const ringMidR = (INNER_R + (ring + 0.5) * RING_GAP) * scale;
 
     function sampleSector(sector) {
-      const midAngle = TEMPLATE_ROTATION + ((sector + 0.5) / SECTORS) * Math.PI * 2;
-      const px = TEMPLATE_CX + Math.cos(midAngle) * ringMidR;
-      const py = TEMPLATE_CY + Math.sin(midAngle) * ringMidR;
+      const midAngle = currentRotation + ((sector + 0.5) / SECTORS) * Math.PI * 2;
+      const px = cx + Math.cos(midAngle) * ringMidR;
+      const py = cy + Math.sin(midAngle) * ringMidR;
       const bit = isMark(lum(px, py)) ? 1 : 0;
       overlayCtx.fillStyle = bit ? 'rgba(255,80,80,0.85)' : 'rgba(120,255,140,0.7)';
       overlayCtx.beginPath(); overlayCtx.arc(px, py, 2.5, 0, Math.PI * 2); overlayCtx.fill();
@@ -518,12 +587,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', ['enc','dec'][i] === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.getElementById('panel-' + name).classList.add('active');
-  if (name === 'dec') {
-    // decode-wrap щойно став видимим — clientWidth тепер коректний
-    requestAnimationFrame(updateBlurMaskClip);
-  } else {
-    stopCam();
-  }
+  if (name !== 'dec') stopCam();
 }
 
 onTextInput();
