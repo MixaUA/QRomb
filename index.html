@@ -354,6 +354,7 @@ const NOISE_MISMATCH_THRESHOLD = 15;
 let scanHistory = [];
 let locking = false;
 let camStream = null, scanTimer = null;
+let lockHoldTimeoutId = null; // щоб можна було скасувати заплановане finishScan при ручній зупинці
 
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
 
@@ -463,20 +464,41 @@ async function startCam() {
   }
 }
 
-function stopCam() {
+/* Єдина точка зупинки камери й очищення стану — використовується і при
+   ручному натисканні "Зупинити", і при автоматичному завершенні після
+   CONFIRM_STREAK підтверджень (finishScan). Раніше кожен шлях чистив
+   стан по-своєму — тепер один спільний шлях, щоб нічого не забути.
+
+   Явний video.srcObject = null і video.pause() — без цього сам
+   MediaStream і його відеодоріжка (та пам'ять під неї) можуть не
+   звільнитись одразу після stop(), навіть коли track.stop() вже
+   викликано: <video> все ще тримає посилання на потік через srcObject. */
+function teardownCamera() {
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
   if (overlayAnimFrame) { cancelAnimationFrame(overlayAnimFrame); overlayAnimFrame = null; }
-  scanHistory = [];
+  if (lockHoldTimeoutId) { clearTimeout(lockHoldTimeoutId); lockHoldTimeoutId = null; }
+
+  const video = document.getElementById('camVideo');
+  video.pause();
+  video.srcObject = null;
+
   resetTracking();
   lastTriangle = null;
   targetRingProgress = 0;
   ringProgress = 0;
   locking = false;
-  setStatus('Радар вимкнено', '');
+  scanHistory = [];
+
   const dc = document.getElementById('decCanvas');
   dc.getContext('2d').clearRect(0, 0, dc.width, dc.height);
-  document.getElementById('sampleCanvas').getContext('2d').clearRect(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+  const sc = document.getElementById('sampleCanvas');
+  sc.getContext('2d').clearRect(0, 0, sc.width, sc.height);
+}
+
+function stopCam() {
+  teardownCamera();
+  setStatus('Радар вимкнено', '');
 }
 
 function onThemeToggle() {
@@ -738,11 +760,14 @@ function registerReading(text, mismatches) {
     return;
   }
 
-  const reading = text + '|' + mismatches;
-  if (scanHistory.length && scanHistory[scanHistory.length - 1] === reading) {
-    scanHistory.push(reading);
+  // Порівнюємо серію лише за текстом. Якщо додати сюди ще й mismatches,
+  // лічильник збігів практично ніколи не накопичиться: кількість
+  // розбіжностей дзеркала — шумна величина, що стрибає кадр до кадру
+  // (0, 1, 0, 2...) навіть коли розпізнаний текст уже стабільний.
+  if (scanHistory.length && scanHistory[scanHistory.length - 1] === text) {
+    scanHistory.push(text);
   } else {
-    scanHistory = [reading];
+    scanHistory = [text];
   }
 
   targetRingProgress = Math.min(scanHistory.length, CONFIRM_STREAK);
@@ -757,14 +782,16 @@ function registerReading(text, mismatches) {
 
   if (scanHistory.length >= CONFIRM_STREAK && !locking) {
     locking = true;
-    setTimeout(() => finishScan(text, mismatches), LOCK_HOLD_MS);
+    lockHoldTimeoutId = setTimeout(() => finishScan(text, mismatches), LOCK_HOLD_MS);
   }
 }
 
+/* Диск підтверджено CONFIRM_STREAK разів поспіль — камера повністю
+   зупиняється (через teardownCamera), результат лишається на екрані.
+   Наступне сканування вимагає нового натискання "Запустити камеру". */
 function finishScan(text, mismatches) {
-  setStatus('Зафіксовано', mismatches === 0 ? 'ok' : 'warn');
-  locking = false; // дозволяємо продовжити сканування наступного диска без перезапуску камери
-  scanHistory = [];
+  teardownCamera();
+  setStatus('Завершено ✓ — натисни «Запустити камеру» для нового диска', mismatches === 0 ? 'ok' : 'warn');
 }
 
 /* ===================== ВКЛАДКИ ===================== */
