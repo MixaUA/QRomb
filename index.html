@@ -122,12 +122,12 @@ function indexToChar(i) { return ALPHABET[i] ?? '?'; }
 /* ===================== ГЕОМЕТРІЯ ДИСКА ===================== */
 const CX = 240, CY = 240;
 const ANCHOR_R = 200;
-const ANCHOR_SIZE = 17; // збільшено (було 14) — більший запас розміру над плямами даних
+const ANCHOR_SIZE = 14;
 const START_ANGLE = Math.PI / 2;
 const RINGS = 10, SECTORS = 12;
 const INNER_R = 40, OUTER_R = 175;
 const RING_GAP = (OUTER_R - INNER_R) / RINGS;
-const HUB_R = 9; // зменшено (було 16) — раніше втулка була БІЛЬШОЮ за якір і сама переплутувалась з ним
+const HUB_R = 16;
 const TRIANGLE_SIDE_REF = ANCHOR_R * Math.sqrt(3); // еталонна довжина сторони трикутника якорів
 
 /* ===================== КОДУВАННЯ ТЕКСТУ В БІТИ ===================== */
@@ -317,12 +317,6 @@ const ANCHOR_DOT_RADIUS_PX = 6;
 const TRIANGLE_DASH = [6, 6];
 let overlayAnimFrame = null;
 
-// Останній кадр діагностики (кандидати-плями + точки семплів кілець) —
-// зберігаються тут і домальовуються animateOverlay() щокадру, інакше
-// clearRect у 60fps-циклі стирає їх раніше, ніж людина встигне побачити
-let lastCandidateBlobs = [];
-let lastSamplePoints = []; // {x, y, bit}
-
 const CONFIRM_STREAK = 3;
 const LOCK_HOLD_MS = 550;
 // поріг розбіжностей дзеркала, вище якого читання вважається шумом
@@ -369,23 +363,6 @@ function drawFocusTriangle(displayCtx, W, H) {
     displayCtx.arc(p.x, p.y, ANCHOR_DOT_RADIUS_PX, 0, Math.PI * 2);
     displayCtx.fill();
   });
-
-  // кандидати-плями (пройшли фільтр округлості) — блакитні кола
-  displayCtx.strokeStyle = 'rgba(100,220,255,0.7)';
-  displayCtx.lineWidth = 1.5;
-  lastCandidateBlobs.forEach(b => {
-    displayCtx.beginPath();
-    displayCtx.arc(b.x, b.y, 8, 0, Math.PI * 2);
-    displayCtx.stroke();
-  });
-
-  // точки семплів кілець — червоний/зелений відповідно до біта
-  lastSamplePoints.forEach(p => {
-    displayCtx.fillStyle = p.bit ? 'rgba(255,80,80,0.85)' : 'rgba(120,255,140,0.7)';
-    displayCtx.beginPath();
-    displayCtx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
-    displayCtx.fill();
-  });
 }
 
 function animateOverlay() {
@@ -412,8 +389,6 @@ async function startCam() {
     lastTriangle = null;
     targetRingProgress = 0;
     ringProgress = 0;
-    lastCandidateBlobs = [];
-    lastSamplePoints = [];
     locking = false;
     setStatus('Пошук якорів...', '');
     document.getElementById('decResult').innerHTML = '';
@@ -434,8 +409,6 @@ function stopCam() {
   lastTriangle = null;
   targetRingProgress = 0;
   ringProgress = 0;
-  lastCandidateBlobs = [];
-  lastSamplePoints = [];
   locking = false;
   setStatus('Радар вимкнено', '');
   const dc = document.getElementById('decCanvas');
@@ -499,27 +472,18 @@ function tryDecode() {
   visitedBuf.fill(0);
   const visited = visitedBuf;
 
-  // мінімальна "округлість" плями (реальна площа / площа кола, вписаного
-  // в bounding box), щоб пройти як кандидат у якорі. Якорі — суцільні кола
-  // (округлість близько 0.7-0.9 навіть з огляду на крок 4px і 4-зв'язність).
-  // Сектори/дуги даних — витягнуті клиноподібні форми, значно нижче порогу.
-  const CIRCULARITY_MIN = 0.55;
-
   for (let y = searchY0; y < searchY1; y += 4) {
     for (let x = searchX0; x < searchX1; x += 4) {
       if (isMark(lum(x, y)) && !visited[y * W + x]) {
         floodQueueX[0] = x; floodQueueY[0] = y;
         let qHead = 0, qTail = 1;
         let sx = 0, sy = 0, cnt = 0;
-        let minX = x, maxX = x, minY = y, maxY = y;
         while (qHead < qTail && cnt < 1200) {
           const cx = floodQueueX[qHead], cy = floodQueueY[qHead];
           qHead++;
           if (cx < 0 || cx >= W || cy < 0 || cy >= H || visited[cy * W + cx] || !isMark(lum(cx, cy))) continue;
           visited[cy * W + cx] = 1;
           sx += cx; sy += cy; cnt++;
-          if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
-          if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
           if (qTail + 4 <= floodQueueX.length) {
             floodQueueX[qTail] = cx + 4; floodQueueY[qTail] = cy; qTail++;
             floodQueueX[qTail] = cx - 4; floodQueueY[qTail] = cy; qTail++;
@@ -527,14 +491,7 @@ function tryDecode() {
             floodQueueX[qTail] = cx; floodQueueY[qTail] = cy - 4; qTail++;
           }
         }
-        if (cnt > 6 && cnt < 1200) {
-          const rAvg = ((maxX - minX) + (maxY - minY)) / 4 || 1;
-          const circleArea = Math.PI * rAvg * rAvg;
-          const circularity = cnt / circleArea;
-          if (circularity >= CIRCULARITY_MIN) {
-            markBlobs.push({ x: sx / cnt, y: sy / cnt, size: cnt, circularity });
-          }
-        }
+        if (cnt > 6 && cnt < 1200) markBlobs.push({ x: sx / cnt, y: sy / cnt, size: cnt });
       }
     }
   }
@@ -543,14 +500,9 @@ function tryDecode() {
   if (markBlobs.length < 3) {
     handleTrackingMiss();
     lastTriangle = null;
-    lastCandidateBlobs = [];
-    lastSamplePoints = [];
     setStatus('Пошук якорів...', '');
     return;
   }
-
-  // зберігаємо кандидатів для домальовування в animateOverlay (не малюємо тут напряму)
-  lastCandidateBlobs = markBlobs.slice(0, Math.min(9, markBlobs.length)).map(b => ({ x: b.x, y: b.y }));
 
   // --- КРОК 2: пошук трійки з фільтрами розміру/форми/орієнтації ---
   const candidates = markBlobs.slice(0, Math.min(9, markBlobs.length));
@@ -586,7 +538,6 @@ function tryDecode() {
   if (!bestTriangle) {
     handleTrackingMiss();
     lastTriangle = null;
-    lastSamplePoints = [];
     setStatus(sawOversized ? 'Занадто близько — трохи відсунь' : 'Стабілізація геометрії...', '');
     return;
   }
@@ -604,9 +555,10 @@ function tryDecode() {
   const scale = baseSide / TRIANGLE_SIDE_REF;
 
   // --- КРОК 3: зчитування 10 кілець (6 унікальних + 6 дзеркальних) ---
+  const dc = document.getElementById('decCanvas');
+  const overlayCtx = dc.getContext('2d'); // точки семплів малюємо тим самим ctx, що й анімація оверлею
   const indices = [];
   let totalMismatches = 0;
-  const newSamplePoints = []; // збираємо тут, замінюємо lastSamplePoints одразу всім разом наприкінці
 
   for (let ring = 0; ring < RINGS; ring++) {
     const ringMidR = (INNER_R + (ring + 0.5) * RING_GAP) * scale;
@@ -616,7 +568,8 @@ function tryDecode() {
       const px = cx + Math.cos(midAngle) * ringMidR;
       const py = cy + Math.sin(midAngle) * ringMidR;
       const bit = isMark(lum(px, py)) ? 1 : 0;
-      newSamplePoints.push({ x: px, y: py, bit });
+      overlayCtx.fillStyle = bit ? 'rgba(255,80,80,0.85)' : 'rgba(120,255,140,0.7)';
+      overlayCtx.beginPath(); overlayCtx.arc(px, py, 2.5, 0, Math.PI * 2); overlayCtx.fill();
       return bit;
     }
 
@@ -628,8 +581,6 @@ function tryDecode() {
     const col = (leftBits[3] << 2) | (leftBits[4] << 1) | leftBits[5];
     indices.push(row * 6 + col);
   }
-
-  lastSamplePoints = newSamplePoints;
 
   let text = '';
   for (const idx of indices) {
