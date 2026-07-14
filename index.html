@@ -54,7 +54,7 @@
     aspect-ratio: 1 / 1;
     overflow: hidden;
     border-radius: 6px;
-    background: #e0e0e0; /* Сірий фон під відео, щоб було видно межі */
+    background: #e0e0e0;
     border: 1px solid #ccc;
   }
   #camVideo {
@@ -162,9 +162,9 @@ function indicesToRingBits(indices) {
   return fullBits;
 }
 
-/* ===================== МАЛЮВАННЯ (ІНВЕРТОВАНІ КОЛЬОРИ) ===================== */
+/* ===================== МАЛЮВАННЯ (ЧЕРВОНИЙ НА БІЛОМУ) ===================== */
 function drawAnchors(ctx) {
-  ctx.fillStyle = '#d32f2f'; // Червоний замість білого
+  ctx.fillStyle = '#d32f2f';
   const angles = [90, 210, 330].map(d => d * Math.PI / 180);
   for (const a of angles) {
     ctx.beginPath();
@@ -174,7 +174,7 @@ function drawAnchors(ctx) {
 }
 
 function drawHub(ctx) {
-  ctx.fillStyle = '#d32f2f'; // Червоний замість білого
+  ctx.fillStyle = '#d32f2f';
   ctx.beginPath();
   ctx.arc(CX, CY, HUB_R, 0, Math.PI * 2);
   ctx.fill();
@@ -183,10 +183,10 @@ function drawHub(ctx) {
 function drawDisc(canvas, fullBits) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, 480, 480);
-  ctx.fillStyle = '#ffffff'; // Білий фон замість синього
+  ctx.fillStyle = '#ffffff'; // Білий фон
   ctx.fillRect(0, 0, 480, 480);
 
-  ctx.fillStyle = '#d32f2f'; // Червоні сегменти замість білих
+  ctx.fillStyle = '#d32f2f'; // Червоні сегменти
   ctx.beginPath();
   for (let ring = 0; ring < RINGS; ring++) {
     const rInner = INNER_R + ring * RING_GAP;
@@ -202,7 +202,7 @@ function drawDisc(canvas, fullBits) {
     }
   }
   ctx.fill();
-  ctx.strokeStyle = '#d32f2f'; // Червона обводка
+  ctx.strokeStyle = '#d32f2f';
   ctx.lineWidth = 1.2;
   ctx.stroke();
 
@@ -267,8 +267,7 @@ function angleDiffRad(a, b) {
   return diff;
 }
 
-/* === КЛЮЧОВА ЗМІНА ДЛЯ ДЕКОДЕРА === */
-// Тепер мітки (червоні) є ТЕМНІШИМИ за фон (білий).
+/* === КЛЮЧОВА ЗМІНА: Полярність тепер 'dark' (темне на світлому) === */
 const DISC_POLARITY = 'dark'; 
 
 const TRACKING_ENABLED = false;
@@ -327,32 +326,31 @@ function drawFocusTriangle(displayCtx, W, H) {
 
   const vertices = lastTriangle;
 
-  // БІЛИЙ трикутник з чорною тінню для виразності на будь-якому фоні
+  // БІЛИЙ трикутник з чорною тінню для максимальної виразності на будь-якому фоні
   displayCtx.shadowColor = 'rgba(0, 0, 0, 0.8)';
   displayCtx.shadowBlur = 6;
   displayCtx.shadowOffsetX = 0;
   displayCtx.shadowOffsetY = 0;
   
   displayCtx.setLineDash(TRIANGLE_DASH);
-  displayCtx.strokeStyle = '#ffffff'; // Суто білий
-  displayCtx.lineWidth = 3; // Трохи товщі для виразності
+  displayCtx.strokeStyle = '#ffffff'; 
+  displayCtx.lineWidth = 3; 
   displayCtx.beginPath();
   vertices.forEach((p, i) => { if (i === 0) displayCtx.moveTo(p.x, p.y); else displayCtx.lineTo(p.x, p.y); });
   displayCtx.closePath();
   displayCtx.stroke();
   displayCtx.setLineDash([]);
 
-  // БІЛІ цятки замість жовтих
+  // БІЛІ цятки
   vertices.forEach((p, i) => {
     const alpha = Math.max(0, Math.min(1, ringProgress - i));
     if (alpha <= 0.01) return;
-    displayCtx.fillStyle = `rgba(255, 255, 255, ${alpha})`; // Суто білий
+    displayCtx.fillStyle = `rgba(255, 255, 255, ${alpha})`; 
     displayCtx.beginPath();
     displayCtx.arc(p.x, p.y, ANCHOR_DOT_RADIUS_PX, 0, Math.PI * 2);
     displayCtx.fill();
   });
   
-  // Скидаємо тінь, щоб не впливала на інші елементи
   displayCtx.shadowColor = 'transparent';
   displayCtx.shadowBlur = 0;
 }
@@ -447,10 +445,13 @@ function tryDecode() {
   for (let i = 0; i < data.length; i += 32) totalLum += data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
   const avgLum = totalLum / (data.length / 32);
   
-  // Логіка порогу тепер працює на пошук темного (червоного) на світлому (білому)
+  /* === ВИПРАВЛЕНИЙ ПОРІГ ЯСКРАВОСТІ === 
+     Для червоного (lum ~95) на білому (lum ~255) потрібен поріг нижче середнього, 
+     але не штучно занижений до 115, як було раніше. 
+     Формула avgLum * 0.75 з обмеженням 80-220 дає ідеальний коридор для будь-якого освітлення. */
   const THRESH = DISC_POLARITY === 'light'
-    ? Math.max(140, avgLum * 1.24)
-    : Math.min(115, avgLum * 0.76);
+    ? Math.min(255, Math.max(150, avgLum * 1.2))
+    : Math.max(80, Math.min(220, avgLum * 0.75)); 
     
   function isMark(l) { return DISC_POLARITY === 'light' ? l > THRESH : l < THRESH; }
 
@@ -571,7 +572,6 @@ function tryDecode() {
       const px = cx + Math.cos(midAngle) * ringMidR;
       const py = cy + Math.sin(midAngle) * ringMidR;
       const bit = isMark(lum(px, py)) ? 1 : 0;
-      // Точки семплів: червоні для 1 (знайдено мітку), світло-зелені для 0 (фон)
       overlayCtx.fillStyle = bit ? 'rgba(211, 47, 47, 0.85)' : 'rgba(200, 230, 200, 0.7)';
       overlayCtx.beginPath(); overlayCtx.arc(px, py, 2.5, 0, Math.PI * 2); overlayCtx.fill();
       return bit;
