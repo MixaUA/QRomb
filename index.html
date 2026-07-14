@@ -58,12 +58,6 @@
     width: 100%; height: 100%;
     object-fit: cover;
   }
-  /* розмиває кадр камери скрізь, окрім трикутника-гейда (дірка вирізається на canvas через destination-out) */
-  #blurCanvas {
-    position: absolute; top: 0; left: 0;
-    width: 100%; height: 100%;
-    pointer-events: none;
-  }
   #decCanvas {
     position: absolute; top: 0; left: 0;
     width: 100%; height: 100%;
@@ -107,7 +101,6 @@
   <div class="card">
     <div class="decode-wrap">
       <video id="camVideo" autoplay playsinline muted></video>
-      <canvas id="blurCanvas" width="340" height="340"></canvas>
       <canvas id="decCanvas" width="340" height="340"></canvas>
     </div>
     <div class="status" id="decStatus">Радар вимкнено</div>
@@ -126,7 +119,7 @@ const charToIndex = {};
 ALPHABET.forEach((c, i) => charToIndex[c] = i);
 function indexToChar(i) { return ALPHABET[i] ?? '?'; }
 
-/* ===================== ГЕОМЕТРІЯ ДИСКА (кодер) ===================== */
+/* ===================== ГЕОМЕТРІЯ ДИСКА ===================== */
 const CX = 240, CY = 240;
 const ANCHOR_R = 200;
 const ANCHOR_SIZE = 14;
@@ -135,6 +128,7 @@ const RINGS = 10, SECTORS = 12;
 const INNER_R = 40, OUTER_R = 175;
 const RING_GAP = (OUTER_R - INNER_R) / RINGS;
 const HUB_R = 16;
+const TRIANGLE_SIDE_REF = ANCHOR_R * Math.sqrt(3); // еталонна довжина сторони трикутника якорів
 
 /* ===================== КОДУВАННЯ ТЕКСТУ В БІТИ ===================== */
 function encodeTextToRings(text) {
@@ -166,7 +160,7 @@ function indicesToRingBits(indices) {
   return fullBits;
 }
 
-/* ===================== МАЛЮВАННЯ (кодер) ===================== */
+/* ===================== МАЛЮВАННЯ ===================== */
 function drawAnchors(ctx) {
   ctx.fillStyle = '#ffffff';
   const angles = [90, 210, 330].map(d => d * Math.PI / 180);
@@ -252,116 +246,135 @@ analysisCanvas.width = ANALYSIS_SIZE;
 analysisCanvas.height = ANALYSIS_SIZE;
 const analysisCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
 
-/* ================================================================
-   ФІКСОВАНИЙ ШАБЛОН-ГЕЙД: замість пошуку трикутника по всьому кадру
-   (що плутало клітинки диска з якорями) — трикутник завжди в
-   одному й тому ж місці екрана. Людина сама підганяє диск під нього.
-   Кути шаблону відповідають кутам якорів у кодері (90°/210°/330°),
-   тож орієнтація й масштаб зчитування кілець стають константами.
-   ================================================================ */
-const TEMPLATE_CX = ANALYSIS_SIZE / 2;
-const TEMPLATE_CY = ANALYSIS_SIZE / 2;
-const TEMPLATE_SIDE = 200;
-const TEMPLATE_R = TEMPLATE_SIDE / Math.sqrt(3);
-const TEMPLATE_ROTATION = Math.PI / 2; // низ трикутника дивиться вниз, як у кодері
-const TEMPLATE_ANGLES = [90, 210, 330].map(d => d * Math.PI / 180);
-const TEMPLATE_VERTICES = TEMPLATE_ANGLES.map(a => ({
-  x: TEMPLATE_CX + Math.cos(a) * TEMPLATE_R,
-  y: TEMPLATE_CY + Math.sin(a) * TEMPLATE_R
-}));
-// масштаб переводу кодерських радіусів (простір 480px, ANCHOR_R=200) у простір аналізу (340px)
-const TEMPLATE_SCALE = TEMPLATE_R / ANCHOR_R;
-
-const DISC_POLARITY = 'light'; // біла руна на темному тлі
-
-/* ================================================================
-   ЛОКАЛЬНИЙ ПОШУК ЯКОРЯ НАВКОЛО КОЖНОЇ ВЕРШИНИ ШАБЛОНУ.
-   Вимагати збіг у точці — нереалістично для руки, що тримає диск.
-   Тому шукаємо пляму в невеликому вікні навколо очікуваної вершини —
-   але приймаємо кандидата, лише якщо його відстань від центру диска
-   відповідає радіусу якорів, а не кілець даних. Кільця завжди
-   суттєво ближче до центру (OUTER_R), тому цей радіальний фільтр
-   відсікає клітинки даних, навіть якщо вікно пошуку їх торкається.
-   ================================================================ */
-const SEARCH_WINDOW_R = 34;       // px у просторі аналізу — половина сторони вікна пошуку
-const EXPECTED_ANCHOR_PX_R = ANCHOR_SIZE * TEMPLATE_SCALE;
-const EXPECTED_ANCHOR_AREA = Math.PI * EXPECTED_ANCHOR_PX_R * EXPECTED_ANCHOR_PX_R;
-const MIN_BLOB_AREA = EXPECTED_ANCHOR_AREA * 0.25;
-const MAX_BLOB_AREA = EXPECTED_ANCHOR_AREA * 4;
-const MIN_COMPACTNESS = 0.5; // cnt / (bboxW*bboxH); коло ≈ 0.785, клітинки/дуги — нижче
-// радіальна смуга: анкер очікується на TEMPLATE_R, кільця — не далі OUTER_R*TEMPLATE_SCALE
-const MIN_ANCHOR_RADIUS = OUTER_R * TEMPLATE_SCALE + 4;
-const MAX_ANCHOR_RADIUS = TEMPLATE_R + SEARCH_WINDOW_R;
-
-const FLOOD_QUEUE_CAP = 4000;
+const visitedBuf = new Uint8Array(ANALYSIS_SIZE * ANALYSIS_SIZE);
+const FLOOD_QUEUE_CAP = 4900;
 const floodQueueX = new Int32Array(FLOOD_QUEUE_CAP);
 const floodQueueY = new Int32Array(FLOOD_QUEUE_CAP);
-const visitedBuf = new Uint8Array(ANALYSIS_SIZE * ANALYSIS_SIZE);
 
-function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+const MIN_TRIANGLE_SIDE_PX = 40;
+const MAX_TRIANGLE_SIDE_PX = 300;
+const MAX_ANGLE_DEVIATION_DEG = 22;
+
+/* ================================================================
+   ОРІЄНТАЦІЯ ДИСКА: обмеження кута повороту (перенесено з робочого сканера)
+   Нижній якір трикутника очікується десь внизу кадру — дозволяє
+   відкидати кандидатів, повернутих під неможливим кутом.
+   ================================================================ */
+const EXPECTED_ROTATION_RAD = Math.PI / 2; // 90° = низ трикутника під центром кадру
+const MAX_ROTATION_DEVIATION_DEG = 40;
+const MAX_ROTATION_DEVIATION_RAD = (MAX_ROTATION_DEVIATION_DEG * Math.PI) / 180;
+
+function angleDiffRad(a, b) {
+  let diff = a - b;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return diff;
+}
+
+/* ================================================================
+   ПОЛЯРНІСТЬ ДИСКА (перенесено для узгодженості з робочим сканером;
+   тут завжди 'light' — біла руна на темному тлі)
+   ================================================================ */
+const DISC_POLARITY = 'light';
+
+/* ================================================================
+   ТРЕКІНГ КАДРУ (перенесено, вимкнено за замовчуванням — той самий
+   перемикач і той самий фолбек на повний пошук, що й у робочому сканері)
+   ================================================================ */
+const TRACKING_ENABLED = false;
+const TRACKING_SEARCH_RADIUS = 70;
+const TRACKING_LOST_AFTER = 5;
+let trackedCenter = null;
+let trackedMissCount = 0;
+
+function resetTracking() {
+  trackedCenter = null;
+  trackedMissCount = 0;
+}
+
+function handleTrackingHit(cx, cy) {
+  if (!TRACKING_ENABLED) return;
+  trackedCenter = { x: cx, y: cy };
+  trackedMissCount = 0;
+}
+
+function handleTrackingMiss() {
+  if (!TRACKING_ENABLED || !trackedCenter) return;
+  trackedMissCount++;
+  if (trackedMissCount >= TRACKING_LOST_AFTER) resetTracking();
+}
+
+/* ================================================================
+   ПЛАВНА АНІМАЦІЯ ТРИКУТНИКА-ФОКУСУ (перенесено з робочого сканера)
+   Окремий requestAnimationFrame-цикл малює незалежно від того, як
+   часто спрацьовує сам детектор (раз на 220мс) — це дає плавність.
+   ================================================================ */
+let lastTriangle = null;
+let targetRingProgress = 0;
+let ringProgress = 0;
+const RING_EASE = 0.18;
+const ANCHOR_DOT_RADIUS_PX = 6;
+const TRIANGLE_DASH = [6, 6];
+let overlayAnimFrame = null;
 
 const CONFIRM_STREAK = 3;
 const LOCK_HOLD_MS = 550;
+// поріг розбіжностей дзеркала, вище якого читання вважається шумом
+// (аналог "idx === -1" у робочому сканері з одним кільцем)
 const NOISE_MISMATCH_THRESHOLD = 15;
 
 let scanHistory = [];
 let locking = false;
 let camStream = null, scanTimer = null;
 
-/* стан підсвітки шаблону: чорний під час пошуку, зелений коли всі 3 кути збігаються */
-let templateActive = false;
-let colorProgress = 0; // згладжений перехід 0(чорний) -> 1(зелений)
-const COLOR_EASE = 0.2;
-const COLOR_SEARCH = [40, 40, 40];
-const COLOR_FOUND = [90, 220, 110];
-let overlayAnimFrame = null;
+function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
 
-function drawFocusTriangle(ctx, W, H) {
-  ctx.clearRect(0, 0, W, H);
-  const t = colorProgress;
-  const r = Math.round(COLOR_SEARCH[0] + t * (COLOR_FOUND[0] - COLOR_SEARCH[0]));
-  const g = Math.round(COLOR_SEARCH[1] + t * (COLOR_FOUND[1] - COLOR_SEARCH[1]));
-  const b = Math.round(COLOR_SEARCH[2] + t * (COLOR_FOUND[2] - COLOR_SEARCH[2]));
-  ctx.strokeStyle = `rgb(${r},${g},${b})`;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  TEMPLATE_VERTICES.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
-  ctx.closePath();
-  ctx.stroke();
+function maxAngleDeviation(a, b, c) {
+  function angleAt(opp, s1, s2) {
+    const cosVal = (s1*s1 + s2*s2 - opp*opp) / (2*s1*s2);
+    return Math.acos(Math.max(-1, Math.min(1, cosVal))) * 180 / Math.PI;
+  }
+  const A = angleAt(a,b,c), B = angleAt(b,a,c), C = angleAt(c,a,b);
+  return Math.max(Math.abs(A-60), Math.abs(B-60), Math.abs(C-60));
+}
+
+/* малює пунктирний трикутник (низ — lastTriangle[0]) і графітні цятки,
+   що з'являються по одній з кожним підтвердженим зчитуванням */
+function drawFocusTriangle(displayCtx, W, H) {
+  displayCtx.clearRect(0, 0, W, H);
+  if (!lastTriangle) return;
+
+  const vertices = lastTriangle;
+
+  displayCtx.setLineDash(TRIANGLE_DASH);
+  displayCtx.strokeStyle = 'rgba(255,255,255,0.6)';
+  displayCtx.lineWidth = 2;
+  displayCtx.beginPath();
+  vertices.forEach((p, i) => { if (i === 0) displayCtx.moveTo(p.x, p.y); else displayCtx.lineTo(p.x, p.y); });
+  displayCtx.closePath();
+  displayCtx.stroke();
+  displayCtx.setLineDash([]);
+
+  vertices.forEach((p, i) => {
+    const alpha = Math.max(0, Math.min(1, ringProgress - i));
+    if (alpha <= 0.01) return;
+    displayCtx.fillStyle = `rgba(255, 209, 121, ${alpha})`;
+    displayCtx.beginPath();
+    displayCtx.arc(p.x, p.y, ANCHOR_DOT_RADIUS_PX, 0, Math.PI * 2);
+    displayCtx.fill();
+  });
 }
 
 function animateOverlay() {
   const dc = document.getElementById('decCanvas');
-  const ctx = dc.getContext('2d');
+  const displayCtx = dc.getContext('2d');
 
-  const target = templateActive ? 1 : 0;
-  colorProgress += (target - colorProgress) * COLOR_EASE;
-  if (Math.abs(target - colorProgress) < 0.01) colorProgress = target;
+  ringProgress += (targetRingProgress - ringProgress) * RING_EASE;
+  if (Math.abs(targetRingProgress - ringProgress) < 0.01) ringProgress = targetRingProgress;
 
-  drawFocusTriangle(ctx, dc.width, dc.height);
+  drawFocusTriangle(displayCtx, dc.width, dc.height);
+
   overlayAnimFrame = requestAnimationFrame(animateOverlay);
-}
-
-/* малює розмитий кадр камери на окремому canvas і "вирізає" трикутну дірку
-   через destination-out — надійніше за CSS clip-path(evenodd), який частина
-   браузерів відкидає повністю замість деградації до звичайного розмиття */
-const blurCanvasEl = document.getElementById('blurCanvas');
-const blurCtx = blurCanvasEl.getContext('2d');
-
-function drawBlurLayer() {
-  blurCtx.clearRect(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
-  blurCtx.save();
-  blurCtx.filter = 'blur(8px)';
-  blurCtx.drawImage(analysisCanvas, 0, 0);
-  blurCtx.restore();
-
-  blurCtx.save();
-  blurCtx.globalCompositeOperation = 'destination-out';
-  blurCtx.beginPath();
-  TEMPLATE_VERTICES.forEach((p, i) => { if (i === 0) blurCtx.moveTo(p.x, p.y); else blurCtx.lineTo(p.x, p.y); });
-  blurCtx.closePath();
-  blurCtx.fill();
-  blurCtx.restore();
 }
 
 async function startCam() {
@@ -372,10 +385,12 @@ async function startCam() {
     });
     video.srcObject = camStream;
     scanHistory = [];
-    templateActive = false;
-    colorProgress = 0;
+    resetTracking();
+    lastTriangle = null;
+    targetRingProgress = 0;
+    ringProgress = 0;
     locking = false;
-    setStatus('Сумісти диск із трикутником...', '');
+    setStatus('Пошук якорів...', '');
     document.getElementById('decResult').innerHTML = '';
     scanTimer = setInterval(scanFrame, 220);
     if (overlayAnimFrame) cancelAnimationFrame(overlayAnimFrame);
@@ -390,8 +405,10 @@ function stopCam() {
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
   if (overlayAnimFrame) { cancelAnimationFrame(overlayAnimFrame); overlayAnimFrame = null; }
   scanHistory = [];
-  templateActive = false;
-  colorProgress = 0;
+  resetTracking();
+  lastTriangle = null;
+  targetRingProgress = 0;
+  ringProgress = 0;
   locking = false;
   setStatus('Радар вимкнено', '');
   const dc = document.getElementById('decCanvas');
@@ -417,7 +434,6 @@ function scanFrame() {
     analysisCtx.drawImage(video, 0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
   }
 
-  drawBlurLayer();
   tryDecode();
 }
 
@@ -443,70 +459,120 @@ function tryDecode() {
     : Math.min(115, avgLum * 0.76);
   function isMark(l) { return DISC_POLARITY === 'light' ? l > THRESH : l < THRESH; }
 
-  // --- КРОК 1: пошук якоря у вікні навколо кожної вершини шаблону ---
+  // --- КРОК 1: пошук плям, звужена зона якщо трекінг активний ---
+  let searchX0 = 6, searchX1 = W - 6, searchY0 = 6, searchY1 = H - 6;
+  if (TRACKING_ENABLED && trackedCenter) {
+    searchX0 = Math.max(6, trackedCenter.x - TRACKING_SEARCH_RADIUS);
+    searchX1 = Math.min(W - 6, trackedCenter.x + TRACKING_SEARCH_RADIUS);
+    searchY0 = Math.max(6, trackedCenter.y - TRACKING_SEARCH_RADIUS);
+    searchY1 = Math.min(H - 6, trackedCenter.y + TRACKING_SEARCH_RADIUS);
+  }
+
+  const markBlobs = [];
   visitedBuf.fill(0);
+  const visited = visitedBuf;
 
-  function findAnchorInWindow(wx, wy, radius) {
-    const x0 = Math.max(0, Math.round(wx - radius)), x1 = Math.min(ANALYSIS_SIZE - 1, Math.round(wx + radius));
-    const y0 = Math.max(0, Math.round(wy - radius)), y1 = Math.min(ANALYSIS_SIZE - 1, Math.round(wy + radius));
-    let best = null, bestCnt = 0;
-
-    for (let y = y0; y <= y1; y += 2) {
-      for (let x = x0; x <= x1; x += 2) {
-        if (visitedBuf[y * ANALYSIS_SIZE + x] || !isMark(lum(x, y))) continue;
-
+  for (let y = searchY0; y < searchY1; y += 4) {
+    for (let x = searchX0; x < searchX1; x += 4) {
+      if (isMark(lum(x, y)) && !visited[y * W + x]) {
         floodQueueX[0] = x; floodQueueY[0] = y;
         let qHead = 0, qTail = 1;
         let sx = 0, sy = 0, cnt = 0;
-        let minX = x, maxX = x, minY = y, maxY = y;
-        while (qHead < qTail && cnt < FLOOD_QUEUE_CAP - 4) {
-          const cx = floodQueueX[qHead], cy = floodQueueY[qHead]; qHead++;
-          if (cx < x0 || cx > x1 || cy < y0 || cy > y1) continue;
-          if (visitedBuf[cy * ANALYSIS_SIZE + cx] || !isMark(lum(cx, cy))) continue;
-          visitedBuf[cy * ANALYSIS_SIZE + cx] = 1;
-          sx += cx; sy += cy; cnt++;
-          if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
-          if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
-          floodQueueX[qTail] = cx + 2; floodQueueY[qTail] = cy; qTail++;
-          floodQueueX[qTail] = cx - 2; floodQueueY[qTail] = cy; qTail++;
-          floodQueueX[qTail] = cx; floodQueueY[qTail] = cy + 2; qTail++;
-          floodQueueX[qTail] = cx; floodQueueY[qTail] = cy - 2; qTail++;
+        // bounding box плями — потрібен для перевірки "круглості" нижче
+        let minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
+        while (qHead < qTail && cnt < 1200) {
+          const px = floodQueueX[qHead], py = floodQueueY[qHead];
+          qHead++;
+          if (px < 0 || px >= W || py < 0 || py >= H || visited[py * W + px] || !isMark(lum(px, py))) continue;
+          visited[py * W + px] = 1;
+          sx += px; sy += py; cnt++;
+          if (px < minPX) minPX = px;
+          if (px > maxPX) maxPX = px;
+          if (py < minPY) minPY = py;
+          if (py > maxPY) maxPY = py;
+          if (qTail + 4 <= floodQueueX.length) {
+            floodQueueX[qTail] = px + 4; floodQueueY[qTail] = py; qTail++;
+            floodQueueX[qTail] = px - 4; floodQueueY[qTail] = py; qTail++;
+            floodQueueX[qTail] = px; floodQueueY[qTail] = py + 4; qTail++;
+            floodQueueX[qTail] = px; floodQueueY[qTail] = py - 4; qTail++;
+          }
         }
-        if (cnt < 4) continue;
-
-        const bboxW = (maxX - minX) || 1, bboxH = (maxY - minY) || 1;
-        const compactness = cnt / (bboxW * bboxH);
-        const ccx = sx / cnt, ccy = sy / cnt;
-        const radiusFromCenter = Math.hypot(ccx - TEMPLATE_CX, ccy - TEMPLATE_CY);
-
-        if (cnt < MIN_BLOB_AREA || cnt > MAX_BLOB_AREA) continue;
-        if (compactness < MIN_COMPACTNESS) continue;
-        if (radiusFromCenter < MIN_ANCHOR_RADIUS || radiusFromCenter > MAX_ANCHOR_RADIUS) continue;
-
-        if (cnt > bestCnt) { bestCnt = cnt; best = { x: ccx, y: ccy }; }
+        if (cnt > 6 && cnt < 1200) {
+          // +4 бо крок floodfill-семплінгу = 4px, тож реальна пляма трохи
+          // ширша за розкид виявлених точок
+          const bboxW = maxPX - minPX + 4;
+          const bboxH = maxPY - minPY + 4;
+          const fillRatio = (cnt * 16) / (bboxW * bboxH); // *16 — кожна точка ~ клітинка 4×4px
+          const aspect = Math.max(bboxW, bboxH) / Math.min(bboxW, bboxH);
+          // якір — кругла крапка: заповнює свій bbox щільно (~0.78 для кола)
+          // і bbox майже квадратний. Сегмент кільця — дуга: витягнута
+          // і/або рідко заповнює прямокутник навколо себе. Це відсіює
+          // "чіпляння" за внутрішні частини диска ще на етапі пошуку плям.
+          if (fillRatio >= 0.5 && aspect <= 1.7) {
+            markBlobs.push({ x: sx / cnt, y: sy / cnt, size: cnt });
+          }
+        }
       }
     }
-    return best;
   }
 
-  const detected = TEMPLATE_VERTICES.map(v => findAnchorInWindow(v.x, v.y, SEARCH_WINDOW_R));
-  const hits = detected.filter(Boolean).length;
-
-  if (hits < 3) {
-    templateActive = false;
-    scanHistory = [];
-    setStatus(`Суміщення... (${hits}/3 якорів)`, '');
+  markBlobs.sort((a, b) => b.size - a.size);
+  if (markBlobs.length < 3) {
+    handleTrackingMiss();
+    lastTriangle = null;
+    setStatus('Пошук якорів...', '');
     return;
   }
-  templateActive = true;
 
-  // --- КРОК 2: реальна геометрія диска з фактично знайдених якорів (не з шаблону) ---
-  const [bottomA, upperA, upperB] = detected; // порядок збігається з TEMPLATE_VERTICES: 0 = низ
-  const cx = (bottomA.x + upperA.x + upperB.x) / 3;
-  const cy = (bottomA.y + upperA.y + upperB.y) / 3;
-  const currentRotation = Math.atan2(bottomA.y - cy, bottomA.x - cx);
-  const avgSide = (dist(bottomA, upperA) + dist(upperA, upperB) + dist(bottomA, upperB)) / 3;
-  const scale = avgSide / (ANCHOR_R * Math.sqrt(3));
+  // --- КРОК 2: пошук трійки з фільтрами розміру/форми/орієнтації ---
+  const candidates = markBlobs.slice(0, Math.min(12, markBlobs.length));
+  let bestTriangle = null, bestScore = Infinity;
+  let sawOversized = false;
+
+  for (let a = 0; a < candidates.length; a++) {
+    for (let b = a + 1; b < candidates.length; b++) {
+      for (let c = b + 1; c < candidates.length; c++) {
+        const pa = candidates[a], pb = candidates[b], pc = candidates[c];
+        const d1 = dist(pa, pb), d2 = dist(pb, pc), d3 = dist(pa, pc);
+        const avg = (d1 + d2 + d3) / 3;
+        if (avg > MAX_TRIANGLE_SIDE_PX) { sawOversized = true; continue; }
+        if (avg < MIN_TRIANGLE_SIDE_PX) continue;
+        const score = (Math.abs(d1-avg) + Math.abs(d2-avg) + Math.abs(d3-avg)) / avg;
+        if (score >= 0.22) continue;
+        if (maxAngleDeviation(d1, d2, d3) > MAX_ANGLE_DEVIATION_DEG) continue;
+
+        // фільтр орієнтації: відкидаємо кандидата з неможливим поворотом
+        // ще до порівняння скору
+        const candCx = (pa.x + pb.x + pc.x) / 3;
+        const candCy = (pa.y + pb.y + pc.y) / 3;
+        const candBottom = [pa, pb, pc].reduce((best, p) => p.y > best.y ? p : best);
+        const candRotation = Math.atan2(candBottom.y - candCy, candBottom.x - candCx);
+        const deviation = Math.abs(angleDiffRad(candRotation, EXPECTED_ROTATION_RAD));
+        if (deviation > MAX_ROTATION_DEVIATION_RAD) continue;
+
+        if (score < bestScore) { bestScore = score; bestTriangle = [pa, pb, pc]; }
+      }
+    }
+  }
+
+  if (!bestTriangle) {
+    handleTrackingMiss();
+    lastTriangle = null;
+    setStatus(sawOversized ? 'Занадто близько — трохи відсунь' : 'Стабілізація геометрії...', '');
+    return;
+  }
+
+  const [pa, pb, pc] = bestTriangle;
+  const cx = (pa.x + pb.x + pc.x) / 3, cy = (pa.y + pb.y + pc.y) / 3;
+  handleTrackingHit(cx, cy);
+
+  const bottomAnchor = [pa, pb, pc].reduce((best, p) => p.y > best.y ? p : best);
+  const otherAnchors = [pa, pb, pc].filter(p => p !== bottomAnchor);
+  lastTriangle = [bottomAnchor, otherAnchors[0], otherAnchors[1]]; // низ завжди першим
+
+  const baseSide = (dist(pa, pb) + dist(pb, pc) + dist(pa, pc)) / 3;
+  const currentRotation = Math.atan2(bottomAnchor.y - cy, bottomAnchor.x - cx);
+  const scale = baseSide / TRIANGLE_SIDE_REF;
 
   // --- КРОК 3: зчитування 10 кілець (6 унікальних + 6 дзеркальних) ---
   const dc = document.getElementById('decCanvas');
@@ -545,13 +611,15 @@ function tryDecode() {
   registerReading(text, totalMismatches);
 }
 
-/* накопичення підтверджень + lock-hold пауза перед фіксацією */
+/* накопичення підтверджень + lock-hold пауза перед фіксацією,
+   за тим самим принципом, що в registerReading робочого сканера */
 function registerReading(text, mismatches) {
   if (locking) return;
 
   if (mismatches > NOISE_MISMATCH_THRESHOLD) {
     scanHistory = [];
-    setStatus('Сирий шум, тримай рівніше...', '');
+    targetRingProgress = 0;
+    setStatus('Сирий шум, шукаю патерн...', '');
     return;
   }
 
@@ -561,6 +629,8 @@ function registerReading(text, mismatches) {
   } else {
     scanHistory = [reading];
   }
+
+  targetRingProgress = Math.min(scanHistory.length, CONFIRM_STREAK);
 
   const resultEl = document.getElementById('decResult');
   resultEl.innerHTML = (text || '(порожньо)') +
