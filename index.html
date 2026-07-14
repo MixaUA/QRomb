@@ -61,6 +61,7 @@
   #decCanvas {
     position: absolute; top: 0; left: 0;
     width: 100%; height: 100%;
+    background: transparent;
     pointer-events: none;
   }
 
@@ -238,35 +239,92 @@ function downloadPNG() {
 
 /* ===================== ДЕКОДЕР (камера) ===================== */
 
-// Розмір робочої (аналізної) канви — та сама, що й видима decCanvas,
-// щоб координати трикутника й точок семплінгу збігались 1:1.
 const ANALYSIS_SIZE = 340;
 
-// Offscreen-канва для аналізу пікселів. Видима decCanvas лишається
-// лише прозорим шаром для оверлею (трикутник + точки) — так само,
-// як у робочому сканері, це прибирає "дергання" відео.
 const analysisCanvas = document.createElement('canvas');
 analysisCanvas.width = ANALYSIS_SIZE;
 analysisCanvas.height = ANALYSIS_SIZE;
 const analysisCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
 
-// Перевикористовувані буфери для flood-fill замість виділення на кожен кадр
 const visitedBuf = new Uint8Array(ANALYSIS_SIZE * ANALYSIS_SIZE);
 const FLOOD_QUEUE_CAP = 4900;
 const floodQueueX = new Int32Array(FLOOD_QUEUE_CAP);
 const floodQueueY = new Int32Array(FLOOD_QUEUE_CAP);
 
-// Фільтри форми/розміру трикутника (як у робочому сканері)
 const MIN_TRIANGLE_SIDE_PX = 40;
 const MAX_TRIANGLE_SIDE_PX = 300;
 const MAX_ANGLE_DEVIATION_DEG = 22;
 
-// Скільки ІДЕНТИЧНИХ послідовних зчитувань тексту треба для фіксації результату.
-// Орієнтація диска тут НЕ обмежується (на відміну від друкованої книжки з
-// фіксованим "низом") — диск можна крутити вільно в руці, тому перевірки
-// EXPECTED_ROTATION_RAD із робочого сканера тут свідомо немає.
+/* ================================================================
+   ОРІЄНТАЦІЯ ДИСКА: обмеження кута повороту (перенесено з робочого сканера)
+   Нижній якір трикутника очікується десь внизу кадру — дозволяє
+   відкидати кандидатів, повернутих під неможливим кутом.
+   ================================================================ */
+const EXPECTED_ROTATION_RAD = Math.PI / 2; // 90° = низ трикутника під центром кадру
+const MAX_ROTATION_DEVIATION_DEG = 40;
+const MAX_ROTATION_DEVIATION_RAD = (MAX_ROTATION_DEVIATION_DEG * Math.PI) / 180;
+
+function angleDiffRad(a, b) {
+  let diff = a - b;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return diff;
+}
+
+/* ================================================================
+   ПОЛЯРНІСТЬ ДИСКА (перенесено для узгодженості з робочим сканером;
+   тут завжди 'light' — біла руна на темному тлі)
+   ================================================================ */
+const DISC_POLARITY = 'light';
+
+/* ================================================================
+   ТРЕКІНГ КАДРУ (перенесено, вимкнено за замовчуванням — той самий
+   перемикач і той самий фолбек на повний пошук, що й у робочому сканері)
+   ================================================================ */
+const TRACKING_ENABLED = false;
+const TRACKING_SEARCH_RADIUS = 70;
+const TRACKING_LOST_AFTER = 5;
+let trackedCenter = null;
+let trackedMissCount = 0;
+
+function resetTracking() {
+  trackedCenter = null;
+  trackedMissCount = 0;
+}
+
+function handleTrackingHit(cx, cy) {
+  if (!TRACKING_ENABLED) return;
+  trackedCenter = { x: cx, y: cy };
+  trackedMissCount = 0;
+}
+
+function handleTrackingMiss() {
+  if (!TRACKING_ENABLED || !trackedCenter) return;
+  trackedMissCount++;
+  if (trackedMissCount >= TRACKING_LOST_AFTER) resetTracking();
+}
+
+/* ================================================================
+   ПЛАВНА АНІМАЦІЯ ТРИКУТНИКА-ФОКУСУ (перенесено з робочого сканера)
+   Окремий requestAnimationFrame-цикл малює незалежно від того, як
+   часто спрацьовує сам детектор (раз на 220мс) — це дає плавність.
+   ================================================================ */
+let lastTriangle = null;
+let targetRingProgress = 0;
+let ringProgress = 0;
+const RING_EASE = 0.18;
+const ANCHOR_DOT_RADIUS_PX = 6;
+const TRIANGLE_DASH = [6, 6];
+let overlayAnimFrame = null;
+
 const CONFIRM_STREAK = 3;
+const LOCK_HOLD_MS = 550;
+// поріг розбіжностей дзеркала, вище якого читання вважається шумом
+// (аналог "idx === -1" у робочому сканері з одним кільцем)
+const NOISE_MISMATCH_THRESHOLD = 15;
+
 let scanHistory = [];
+let locking = false;
 let camStream = null, scanTimer = null;
 
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
@@ -280,6 +338,45 @@ function maxAngleDeviation(a, b, c) {
   return Math.max(Math.abs(A-60), Math.abs(B-60), Math.abs(C-60));
 }
 
+/* малює пунктирний трикутник (низ — lastTriangle[0]) і графітні цятки,
+   що з'являються по одній з кожним підтвердженим зчитуванням */
+function drawFocusTriangle(displayCtx, W, H) {
+  displayCtx.clearRect(0, 0, W, H);
+  if (!lastTriangle) return;
+
+  const vertices = lastTriangle;
+
+  displayCtx.setLineDash(TRIANGLE_DASH);
+  displayCtx.strokeStyle = 'rgba(255,255,255,0.6)';
+  displayCtx.lineWidth = 2;
+  displayCtx.beginPath();
+  vertices.forEach((p, i) => { if (i === 0) displayCtx.moveTo(p.x, p.y); else displayCtx.lineTo(p.x, p.y); });
+  displayCtx.closePath();
+  displayCtx.stroke();
+  displayCtx.setLineDash([]);
+
+  vertices.forEach((p, i) => {
+    const alpha = Math.max(0, Math.min(1, ringProgress - i));
+    if (alpha <= 0.01) return;
+    displayCtx.fillStyle = `rgba(255, 209, 121, ${alpha})`;
+    displayCtx.beginPath();
+    displayCtx.arc(p.x, p.y, ANCHOR_DOT_RADIUS_PX, 0, Math.PI * 2);
+    displayCtx.fill();
+  });
+}
+
+function animateOverlay() {
+  const dc = document.getElementById('decCanvas');
+  const displayCtx = dc.getContext('2d');
+
+  ringProgress += (targetRingProgress - ringProgress) * RING_EASE;
+  if (Math.abs(targetRingProgress - ringProgress) < 0.01) ringProgress = targetRingProgress;
+
+  drawFocusTriangle(displayCtx, dc.width, dc.height);
+
+  overlayAnimFrame = requestAnimationFrame(animateOverlay);
+}
+
 async function startCam() {
   try {
     const video = document.getElementById('camVideo');
@@ -288,8 +385,16 @@ async function startCam() {
     });
     video.srcObject = camStream;
     scanHistory = [];
+    resetTracking();
+    lastTriangle = null;
+    targetRingProgress = 0;
+    ringProgress = 0;
+    locking = false;
     setStatus('Пошук якорів...', '');
+    document.getElementById('decResult').innerHTML = '';
     scanTimer = setInterval(scanFrame, 220);
+    if (overlayAnimFrame) cancelAnimationFrame(overlayAnimFrame);
+    overlayAnimFrame = requestAnimationFrame(animateOverlay);
   } catch (e) {
     setStatus('Помилка камери: ' + e.message, 'err');
   }
@@ -298,7 +403,13 @@ async function startCam() {
 function stopCam() {
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+  if (overlayAnimFrame) { cancelAnimationFrame(overlayAnimFrame); overlayAnimFrame = null; }
   scanHistory = [];
+  resetTracking();
+  lastTriangle = null;
+  targetRingProgress = 0;
+  ringProgress = 0;
+  locking = false;
   setStatus('Радар вимкнено', '');
   const dc = document.getElementById('decCanvas');
   dc.getContext('2d').clearRect(0, 0, dc.width, dc.height);
@@ -314,10 +425,6 @@ function scanFrame() {
   const video = document.getElementById('camVideo');
   if (!camStream || video.readyState < 2) return;
 
-  // КЛЮЧОВИЙ ФІКС: вирізаємо центральний КВАДРАТ з відео перед аналізом,
-  // а не розтягуємо прямокутний кадр у квадрат. Без цього рівносторонній
-  // трикутник якорів спотворюється по одній з осей ще до аналізу —
-  // саме тому раніше "сектори шукались нижче кадру".
   const vw = video.videoWidth, vh = video.videoHeight;
   if (vw && vh) {
     const sSize = Math.min(vw, vh);
@@ -331,13 +438,15 @@ function scanFrame() {
 }
 
 function tryDecode() {
+  if (locking) return; // триває пауза-утримання перед фіксацією — кадри ігноруємо
+
   const W = ANALYSIS_SIZE, H = ANALYSIS_SIZE;
   const img = analysisCtx.getImageData(0, 0, W, H);
   const data = img.data;
 
   function lum(x, y) {
     x = Math.round(x); y = Math.round(y);
-    if (x < 0 || x >= W || y < 0 || y >= H) return 0;
+    if (x < 0 || x >= W || y < 0 || y >= H) return 255;
     const i = (y * W + x) * 4;
     return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
   }
@@ -345,16 +454,26 @@ function tryDecode() {
   let totalLum = 0;
   for (let i = 0; i < data.length; i += 32) totalLum += data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
   const avgLum = totalLum / (data.length / 32);
-  const THRESH = Math.min(115, avgLum * 0.76);
-  function isMark(l) { return l < THRESH; }
+  const THRESH = DISC_POLARITY === 'light'
+    ? Math.max(140, avgLum * 1.24)
+    : Math.min(115, avgLum * 0.76);
+  function isMark(l) { return DISC_POLARITY === 'light' ? l > THRESH : l < THRESH; }
 
-  // --- КРОК 1: пошук плям (потенційних якорів), typed-array черга ---
+  // --- КРОК 1: пошук плям, звужена зона якщо трекінг активний ---
+  let searchX0 = 6, searchX1 = W - 6, searchY0 = 6, searchY1 = H - 6;
+  if (TRACKING_ENABLED && trackedCenter) {
+    searchX0 = Math.max(6, trackedCenter.x - TRACKING_SEARCH_RADIUS);
+    searchX1 = Math.min(W - 6, trackedCenter.x + TRACKING_SEARCH_RADIUS);
+    searchY0 = Math.max(6, trackedCenter.y - TRACKING_SEARCH_RADIUS);
+    searchY1 = Math.min(H - 6, trackedCenter.y + TRACKING_SEARCH_RADIUS);
+  }
+
   const markBlobs = [];
   visitedBuf.fill(0);
   const visited = visitedBuf;
 
-  for (let y = 6; y < H - 6; y += 4) {
-    for (let x = 6; x < W - 6; x += 4) {
+  for (let y = searchY0; y < searchY1; y += 4) {
+    for (let x = searchX0; x < searchX1; x += 4) {
       if (isMark(lum(x, y)) && !visited[y * W + x]) {
         floodQueueX[0] = x; floodQueueY[0] = y;
         let qHead = 0, qTail = 1;
@@ -377,14 +496,15 @@ function tryDecode() {
     }
   }
 
-  const dc = document.getElementById('decCanvas');
-  const overlayCtx = dc.getContext('2d');
-  overlayCtx.clearRect(0, 0, dc.width, dc.height);
-
   markBlobs.sort((a, b) => b.size - a.size);
-  if (markBlobs.length < 3) { setStatus('Пошук якорів...', ''); scanHistory = []; return; }
+  if (markBlobs.length < 3) {
+    handleTrackingMiss();
+    lastTriangle = null;
+    setStatus('Пошук якорів...', '');
+    return;
+  }
 
-  // --- КРОК 2: пошук трійки з фільтрами розміру/форми ---
+  // --- КРОК 2: пошук трійки з фільтрами розміру/форми/орієнтації ---
   const candidates = markBlobs.slice(0, Math.min(9, markBlobs.length));
   let bestTriangle = null, bestScore = Infinity;
   let sawOversized = false;
@@ -400,36 +520,43 @@ function tryDecode() {
         const score = (Math.abs(d1-avg) + Math.abs(d2-avg) + Math.abs(d3-avg)) / avg;
         if (score >= 0.22) continue;
         if (maxAngleDeviation(d1, d2, d3) > MAX_ANGLE_DEVIATION_DEG) continue;
+
+        // фільтр орієнтації: відкидаємо кандидата з неможливим поворотом
+        // ще до порівняння скору
+        const candCx = (pa.x + pb.x + pc.x) / 3;
+        const candCy = (pa.y + pb.y + pc.y) / 3;
+        const candBottom = [pa, pb, pc].reduce((best, p) => p.y > best.y ? p : best);
+        const candRotation = Math.atan2(candBottom.y - candCy, candBottom.x - candCx);
+        const deviation = Math.abs(angleDiffRad(candRotation, EXPECTED_ROTATION_RAD));
+        if (deviation > MAX_ROTATION_DEVIATION_RAD) continue;
+
         if (score < bestScore) { bestScore = score; bestTriangle = [pa, pb, pc]; }
       }
     }
   }
 
   if (!bestTriangle) {
-    scanHistory = [];
+    handleTrackingMiss();
+    lastTriangle = null;
     setStatus(sawOversized ? 'Занадто близько — трохи відсунь' : 'Стабілізація геометрії...', '');
     return;
   }
 
   const [pa, pb, pc] = bestTriangle;
   const cx = (pa.x + pb.x + pc.x) / 3, cy = (pa.y + pb.y + pc.y) / 3;
+  handleTrackingHit(cx, cy);
+
   const bottomAnchor = [pa, pb, pc].reduce((best, p) => p.y > best.y ? p : best);
+  const otherAnchors = [pa, pb, pc].filter(p => p !== bottomAnchor);
+  lastTriangle = [bottomAnchor, otherAnchors[0], otherAnchors[1]]; // низ завжди першим
+
   const baseSide = (dist(pa, pb) + dist(pb, pc) + dist(pa, pc)) / 3;
   const currentRotation = Math.atan2(bottomAnchor.y - cy, bottomAnchor.x - cx);
   const scale = baseSide / TRIANGLE_SIDE_REF;
 
-  // оверлей: пунктирний трикутник, як у робочому сканері
-  overlayCtx.setLineDash([6, 6]);
-  overlayCtx.strokeStyle = 'rgba(255,255,255,0.6)';
-  overlayCtx.lineWidth = 2;
-  overlayCtx.beginPath();
-  overlayCtx.moveTo(bottomAnchor.x, bottomAnchor.y);
-  [pa, pb, pc].filter(p => p !== bottomAnchor).forEach(p => overlayCtx.lineTo(p.x, p.y));
-  overlayCtx.closePath();
-  overlayCtx.stroke();
-  overlayCtx.setLineDash([]);
-
   // --- КРОК 3: зчитування 10 кілець (6 унікальних + 6 дзеркальних) ---
+  const dc = document.getElementById('decCanvas');
+  const overlayCtx = dc.getContext('2d'); // точки семплів малюємо тим самим ctx, що й анімація оверлею
   const indices = [];
   let totalMismatches = 0;
 
@@ -441,7 +568,7 @@ function tryDecode() {
       const px = cx + Math.cos(midAngle) * ringMidR;
       const py = cy + Math.sin(midAngle) * ringMidR;
       const bit = isMark(lum(px, py)) ? 1 : 0;
-      overlayCtx.fillStyle = bit ? '#ff3333' : '#33ff33';
+      overlayCtx.fillStyle = bit ? 'rgba(255,80,80,0.85)' : 'rgba(120,255,140,0.7)';
       overlayCtx.beginPath(); overlayCtx.arc(px, py, 2.5, 0, Math.PI * 2); overlayCtx.fill();
       return bit;
     }
@@ -461,27 +588,48 @@ function tryDecode() {
     text += indexToChar(idx);
   }
 
-  // --- КРОК 4: накопичення кадрів перед фіксацією (як CONFIRM_STREAK у робочому сканері) ---
-  const reading = text + '|' + totalMismatches;
+  registerReading(text, totalMismatches);
+}
+
+/* накопичення підтверджень + lock-hold пауза перед фіксацією,
+   за тим самим принципом, що в registerReading робочого сканера */
+function registerReading(text, mismatches) {
+  if (locking) return;
+
+  if (mismatches > NOISE_MISMATCH_THRESHOLD) {
+    scanHistory = [];
+    targetRingProgress = 0;
+    setStatus('Сирий шум, шукаю патерн...', '');
+    return;
+  }
+
+  const reading = text + '|' + mismatches;
   if (scanHistory.length && scanHistory[scanHistory.length - 1] === reading) {
     scanHistory.push(reading);
   } else {
     scanHistory = [reading];
   }
 
+  targetRingProgress = Math.min(scanHistory.length, CONFIRM_STREAK);
+
   const resultEl = document.getElementById('decResult');
-  const confirmed = scanHistory.length >= CONFIRM_STREAK;
-
   resultEl.innerHTML = (text || '(порожньо)') +
-    (totalMismatches === 0
+    (mismatches === 0
       ? '<span class="badge ok">OK</span>'
-      : `<span class="badge err">⚠ ${totalMismatches}</span>`);
+      : `<span class="badge err">⚠ ${mismatches}</span>`);
 
-  if (confirmed) {
-    setStatus(`Зафіксовано (${scanHistory.length}/${CONFIRM_STREAK})`, totalMismatches === 0 ? 'ok' : 'warn');
-  } else {
-    setStatus(`Кандидат (${scanHistory.length}/${CONFIRM_STREAK})`, '');
+  setStatus(`Кандидат (${scanHistory.length}/${CONFIRM_STREAK})`, '');
+
+  if (scanHistory.length >= CONFIRM_STREAK && !locking) {
+    locking = true;
+    setTimeout(() => finishScan(text, mismatches), LOCK_HOLD_MS);
   }
+}
+
+function finishScan(text, mismatches) {
+  setStatus('Зафіксовано', mismatches === 0 ? 'ok' : 'warn');
+  locking = false; // дозволяємо продовжити сканування наступного диска без перезапуску камери
+  scanHistory = [];
 }
 
 /* ===================== ВКЛАДКИ ===================== */
