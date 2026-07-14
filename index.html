@@ -354,7 +354,6 @@ const NOISE_MISMATCH_THRESHOLD = 15;
 let scanHistory = [];
 let locking = false;
 let camStream = null, scanTimer = null;
-let lockHoldTimeoutId = null; // щоб можна було скасувати заплановане finishScan при ручній зупинці
 
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
 
@@ -464,41 +463,20 @@ async function startCam() {
   }
 }
 
-/* Єдина точка зупинки камери й очищення стану — використовується і при
-   ручному натисканні "Зупинити", і при автоматичному завершенні після
-   CONFIRM_STREAK підтверджень (finishScan). Раніше кожен шлях чистив
-   стан по-своєму — тепер один спільний шлях, щоб нічого не забути.
-
-   Явний video.srcObject = null і video.pause() — без цього сам
-   MediaStream і його відеодоріжка (та пам'ять під неї) можуть не
-   звільнитись одразу після stop(), навіть коли track.stop() вже
-   викликано: <video> все ще тримає посилання на потік через srcObject. */
-function teardownCamera() {
+function stopCam() {
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
   if (overlayAnimFrame) { cancelAnimationFrame(overlayAnimFrame); overlayAnimFrame = null; }
-  if (lockHoldTimeoutId) { clearTimeout(lockHoldTimeoutId); lockHoldTimeoutId = null; }
-
-  const video = document.getElementById('camVideo');
-  video.pause();
-  video.srcObject = null;
-
+  scanHistory = [];
   resetTracking();
   lastTriangle = null;
   targetRingProgress = 0;
   ringProgress = 0;
   locking = false;
-  scanHistory = [];
-
+  setStatus('Радар вимкнено', '');
   const dc = document.getElementById('decCanvas');
   dc.getContext('2d').clearRect(0, 0, dc.width, dc.height);
-  const sc = document.getElementById('sampleCanvas');
-  sc.getContext('2d').clearRect(0, 0, sc.width, sc.height);
-}
-
-function stopCam() {
-  teardownCamera();
-  setStatus('Радар вимкнено', '');
+  document.getElementById('sampleCanvas').getContext('2d').clearRect(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
 }
 
 function onThemeToggle() {
@@ -554,58 +532,30 @@ function tryDecode() {
     return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
   }
 
-  /* ================================================================
-     ЛОКАЛЬНИЙ АДАПТИВНИЙ ПОРІГ (замість одного глобального Оцу).
-     Один поріг на весь кадр 340×340 припускає рівномірне освітлення
-     диска — у реальності світло майже завжди падає під кутом, і одна
-     конкретна ділянка диска може бути стабільно темнішою/світлішою за
-     середнє. Це давало систематично неправильний 1 символ, який
-     дзеркало не ловило (обидві половини дзеркальної пари так само
-     потрапляли під той самий локальний перекіс освітлення).
-
-     Рішення: рахуємо не одне глобальне середнє, а сітку локальних
-     середніх яскравостей (клітинки ~20×20px), і кожну точку порівнюємо
-     з середнім у ЇЇ клітинці, а не з середнім по всьому кадру.
-     ================================================================ */
-  const LOCAL_CELL = 20;
-  const gridCols = Math.ceil(W / LOCAL_CELL);
-  const gridRows = Math.ceil(H / LOCAL_CELL);
-  const gridSum = new Float64Array(gridCols * gridRows);
-  const gridCount = new Uint32Array(gridCols * gridRows);
-
-  for (let y = 0; y < H; y += 2) {
-    const gy = Math.min(gridRows - 1, Math.floor(y / LOCAL_CELL));
-    for (let x = 0; x < W; x += 2) {
-      const gx = Math.min(gridCols - 1, Math.floor(x / LOCAL_CELL));
-      const i = (y * W + x) * 4;
-      const l = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-      const gi = gy * gridCols + gx;
-      gridSum[gi] += l;
-      gridCount[gi]++;
-    }
+  // --- поріг Оцу: сам обчислюється з гістограми яскравості кадру, без
+  //     магічних констант під конкретне освітлення чи тему ---
+  const hist = new Uint32Array(256);
+  let sampleCount = 0;
+  for (let i = 0; i < data.length; i += 32) {
+    const l = data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
+    hist[Math.min(255, Math.max(0, Math.round(l)))]++;
+    sampleCount++;
   }
-
-  const gridAvg = new Float64Array(gridCols * gridRows);
-  let globalSum = 0, globalCount = 0;
-  for (let i = 0; i < gridAvg.length; i++) {
-    if (gridCount[i] > 0) { gridAvg[i] = gridSum[i] / gridCount[i]; globalSum += gridSum[i]; globalCount += gridCount[i]; }
+  let sumAll = 0;
+  for (let t = 0; t < 256; t++) sumAll += t * hist[t];
+  let sumB = 0, wB = 0, maxVar = 0, THRESH = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = sampleCount - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sumAll - sumB) / wF;
+    const varBetween = wB * wF * (mB - mF) * (mB - mF);
+    if (varBetween > maxVar) { maxVar = varBetween; THRESH = t; }
   }
-  const globalAvgFallback = globalCount ? globalSum / globalCount : 128; // про запас для порожніх клітинок
-
-  function localAvg(x, y) {
-    const gx = Math.min(gridCols - 1, Math.max(0, Math.floor(x / LOCAL_CELL)));
-    const gy = Math.min(gridRows - 1, Math.max(0, Math.floor(y / LOCAL_CELL)));
-    const gi = gy * gridCols + gx;
-    return gridCount[gi] > 0 ? gridAvg[gi] : globalAvgFallback;
-  }
-
-  // адитивний відступ від локального середнього (не множник — стабільніший
-  // за різної абсолютної яскравості клітинки, темної чи світлої)
-  const LOCAL_MARGIN = 32;
-  function isMark(l, x, y) {
-    const la = localAvg(x, y);
-    return DISC_THEME === 'dark' ? l > la + LOCAL_MARGIN : l < la - LOCAL_MARGIN;
-  }
+  function isMark(l) { return DISC_THEME === 'dark' ? l > THRESH : l < THRESH; }
 
   // --- КРОК 1: пошук плям, звужена зона якщо трекінг активний ---
   let searchX0 = 6, searchX1 = W - 6, searchY0 = 6, searchY1 = H - 6;
@@ -622,7 +572,7 @@ function tryDecode() {
 
   for (let y = searchY0; y < searchY1; y += 4) {
     for (let x = searchX0; x < searchX1; x += 4) {
-      if (isMark(lum(x, y), x, y) && !visited[y * W + x]) {
+      if (isMark(lum(x, y)) && !visited[y * W + x]) {
         floodQueueX[0] = x; floodQueueY[0] = y;
         let qHead = 0, qTail = 1;
         let sx = 0, sy = 0, cnt = 0;
@@ -631,7 +581,7 @@ function tryDecode() {
         while (qHead < qTail && cnt < 1200) {
           const px = floodQueueX[qHead], py = floodQueueY[qHead];
           qHead++;
-          if (px < 0 || px >= W || py < 0 || py >= H || visited[py * W + px] || !isMark(lum(px, py), px, py)) continue;
+          if (px < 0 || px >= W || py < 0 || py >= H || visited[py * W + px] || !isMark(lum(px, py))) continue;
           visited[py * W + px] = 1;
           sx += px; sy += py; cnt++;
           if (px < minPX) minPX = px;
@@ -729,37 +679,6 @@ function tryDecode() {
     [bottomAnchor, leftAnchor, rightAnchor]
   );
 
-  /* ================================================================
-     НЕЗАЛЕЖНА ПЕРЕВІРКА ГЕОМЕТРІЇ: центральна втулка.
-     Дзеркальна перевірка (лівий/правий сектор) ловить лише ВИПАДКОВИЙ
-     шум в одній точці — обидві точки дзеркальної пари обчислюються з
-     ОДНІЄЇ Й ТІЄЇ Ж transform, тож систематична похибка (трохи неточний
-     центроїд якоря, злегка зміщена афінна прив'язка) зсуває обидві
-     точки в один бік однаково. Вони й далі узгоджуються між собою
-     (mismatches=0), просто обидві вказують не туди — звідси помилки
-     на 1 символ, які фіксуються як "OK".
-
-     Втулка — єдина точка, що НІКОЛИ не бере участі в обчисленні бітів.
-     Якщо transform правильний, її прогнозована позиція (переносимо
-     CX,CY тим самим applyAffine) має збігтися з реально знайденою
-     круглою плямою в кадрі. Якщо найближча пляма-кандидат надто
-     далеко — геометрії не можна довіряти, і читання відкидається ще
-     до підрахунку бітів. */
-  const predictedHub = applyAffine(transform, CX, CY);
-  const hubScale = Math.hypot(transform.a, transform.c); // приблизний лінійний масштаб transform
-  const HUB_CHECK_TOLERANCE_PX = Math.max(10, hubScale * HUB_R * 0.9);
-  let hubOk = false;
-  for (const b of markBlobs) {
-    if (dist(b, predictedHub) < HUB_CHECK_TOLERANCE_PX) { hubOk = true; break; }
-  }
-  if (!hubOk) {
-    handleTrackingMiss();
-    scanHistory = [];
-    targetRingProgress = 0;
-    setStatus('Геометрія не підтверджена (втулка), шукаю...', '');
-    return;
-  }
-
   // --- КРОК 3: зчитування 10 кілець (6 унікальних + 6 дзеркальних) ---
   const indices = [];
   let totalMismatches = 0;
@@ -773,11 +692,10 @@ function tryDecode() {
       const diagramY = CY + Math.sin(midAngle) * ringMidR;
       const { x: px, y: py } = applyAffine(transform, diagramX, diagramY);
       const l = lum(px, py);
-      const la = localAvg(px, py);
-      const bit = isMark(l, px, py) ? 1 : 0;
+      const bit = isMark(l) ? 1 : 0;
       overlayCtx.fillStyle = bit ? 'rgba(255,80,80,0.85)' : 'rgba(120,255,140,0.7)';
       overlayCtx.beginPath(); overlayCtx.arc(px, py, 2.5, 0, Math.PI * 2); overlayCtx.fill();
-      return { bit, confidence: Math.abs(l - la) }; // впевненість тепер відносно ЛОКАЛЬНОГО фону в цій точці
+      return { bit, confidence: Math.abs(l - THRESH) };
     }
 
     const bits = [];
@@ -820,14 +738,11 @@ function registerReading(text, mismatches) {
     return;
   }
 
-  // Порівнюємо серію лише за текстом. Якщо додати сюди ще й mismatches,
-  // лічильник збігів практично ніколи не накопичиться: кількість
-  // розбіжностей дзеркала — шумна величина, що стрибає кадр до кадру
-  // (0, 1, 0, 2...) навіть коли розпізнаний текст уже стабільний.
-  if (scanHistory.length && scanHistory[scanHistory.length - 1] === text) {
-    scanHistory.push(text);
+  const reading = text + '|' + mismatches;
+  if (scanHistory.length && scanHistory[scanHistory.length - 1] === reading) {
+    scanHistory.push(reading);
   } else {
-    scanHistory = [text];
+    scanHistory = [reading];
   }
 
   targetRingProgress = Math.min(scanHistory.length, CONFIRM_STREAK);
@@ -842,16 +757,14 @@ function registerReading(text, mismatches) {
 
   if (scanHistory.length >= CONFIRM_STREAK && !locking) {
     locking = true;
-    lockHoldTimeoutId = setTimeout(() => finishScan(text, mismatches), LOCK_HOLD_MS);
+    setTimeout(() => finishScan(text, mismatches), LOCK_HOLD_MS);
   }
 }
 
-/* Диск підтверджено CONFIRM_STREAK разів поспіль — камера повністю
-   зупиняється (через teardownCamera), результат лишається на екрані.
-   Наступне сканування вимагає нового натискання "Запустити камеру". */
 function finishScan(text, mismatches) {
-  teardownCamera();
-  setStatus('Завершено ✓ — натисни «Запустити камеру» для нового диска', mismatches === 0 ? 'ok' : 'warn');
+  setStatus('Зафіксовано', mismatches === 0 ? 'ok' : 'warn');
+  locking = false; // дозволяємо продовжити сканування наступного диска без перезапуску камери
+  scanHistory = [];
 }
 
 /* ===================== ВКЛАДКИ ===================== */
