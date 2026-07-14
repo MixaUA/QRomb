@@ -532,12 +532,29 @@ function tryDecode() {
     return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
   }
 
-  let totalLum = 0;
-  for (let i = 0; i < data.length; i += 32) totalLum += data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
-  const avgLum = totalLum / (data.length / 32);
-  const THRESH = DISC_THEME === 'dark'
-    ? Math.max(140, avgLum * 1.24)   // темний фон — шукаємо світлі знаки
-    : Math.min(115, avgLum * 0.76);  // світлий фон — шукаємо темні знаки
+  // --- поріг Оцу: сам обчислюється з гістограми яскравості кадру, без
+  //     магічних констант під конкретне освітлення чи тему ---
+  const hist = new Uint32Array(256);
+  let sampleCount = 0;
+  for (let i = 0; i < data.length; i += 32) {
+    const l = data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
+    hist[Math.min(255, Math.max(0, Math.round(l)))]++;
+    sampleCount++;
+  }
+  let sumAll = 0;
+  for (let t = 0; t < 256; t++) sumAll += t * hist[t];
+  let sumB = 0, wB = 0, maxVar = 0, THRESH = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = sampleCount - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sumAll - sumB) / wF;
+    const varBetween = wB * wF * (mB - mF) * (mB - mF);
+    if (varBetween > maxVar) { maxVar = varBetween; THRESH = t; }
+  }
   function isMark(l) { return DISC_THEME === 'dark' ? l > THRESH : l < THRESH; }
 
   // --- КРОК 1: пошук плям, звужена зона якщо трекінг активний ---
@@ -669,23 +686,34 @@ function tryDecode() {
   for (let ring = 0; ring < RINGS; ring++) {
     const ringMidR = INNER_R + (ring + 0.5) * RING_GAP; // радіус у системі координат ДИСКА (0..480), без масштабу
 
-    function sampleSector(sector) {
+    function sampleAt(sector) {
       const midAngle = START_ANGLE + ((sector + 0.5) / SECTORS) * Math.PI * 2; // те саме START_ANGLE, що й у drawDisc
       const diagramX = CX + Math.cos(midAngle) * ringMidR;
       const diagramY = CY + Math.sin(midAngle) * ringMidR;
       const { x: px, y: py } = applyAffine(transform, diagramX, diagramY);
-      const bit = isMark(lum(px, py)) ? 1 : 0;
+      const l = lum(px, py);
+      const bit = isMark(l) ? 1 : 0;
       overlayCtx.fillStyle = bit ? 'rgba(255,80,80,0.85)' : 'rgba(120,255,140,0.7)';
       overlayCtx.beginPath(); overlayCtx.arc(px, py, 2.5, 0, Math.PI * 2); overlayCtx.fill();
-      return bit;
+      return { bit, confidence: Math.abs(l - THRESH) };
     }
 
-    const leftBits = [0,1,2,3,4,5].map(sampleSector);
-    const rightBitsRaw = [11,10,9,8,7,6].map(sampleSector);
-    for (let k = 0; k < 6; k++) if (leftBits[k] !== rightBitsRaw[k]) totalMismatches++;
+    const bits = [];
+    for (let k = 0; k < 6; k++) {
+      const left = sampleAt(k);
+      const right = sampleAt(11 - k);
+      if (left.bit === right.bit) {
+        bits.push(left.bit);
+      } else {
+        // дзеркальна пара розійшлась — довіряємо тому зчитуванню, яке
+        // впевненіше (далі від порогу), а не автоматично лівому
+        totalMismatches++;
+        bits.push(left.confidence >= right.confidence ? left.bit : right.bit);
+      }
+    }
 
-    const row = (leftBits[0] << 2) | (leftBits[1] << 1) | leftBits[2];
-    const col = (leftBits[3] << 2) | (leftBits[4] << 1) | leftBits[5];
+    const row = (bits[0] << 2) | (bits[1] << 1) | bits[2];
+    const col = (bits[3] << 2) | (bits[4] << 1) | bits[5];
     indices.push(row * 6 + col);
   }
 
