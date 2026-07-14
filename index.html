@@ -6,44 +6,44 @@
 <style>
   * { box-sizing: border-box; }
   body {
-    background: #0b3d63;
-    color: #fff;
+    background: #ffffff;
+    color: #2a2a2a;
     font-family: 'Georgia', serif;
     margin: 0;
     padding: 20px 12px 60px;
   }
   h1 { font-size: 20px; font-weight: normal; text-align: center; margin: 0 0 4px; }
-  .sub { text-align: center; color: #aacbe8; font-size: 13px; margin-bottom: 24px; }
+  .sub { text-align: center; color: #888888; font-size: 13px; margin-bottom: 24px; }
 
   .tabs { display: flex; justify-content: center; gap: 8px; margin-bottom: 20px; }
   .tab {
-    background: #0e4a78; border: 1px solid #ffffff33; color: #aacbe8;
+    background: #f2f2f2; border: 1px solid #cc222233; color: #888888;
     padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 14px;
   }
-  .tab.active { background: #ffd479; color: #0b3d63; font-weight: bold; }
+  .tab.active { background: #cc2222; color: #ffffff; font-weight: bold; }
 
   .panel { display: none; max-width: 520px; margin: 0 auto; }
   .panel.active { display: block; }
 
-  .card { background: #0e4a78; border: 2px solid #ffffff33; border-radius: 8px; padding: 18px; }
-  canvas { width: 100%; height: auto; display: block; background: #0b3d63; border-radius: 6px; }
+  .card { background: #ffffff; border: 2px solid #cc222233; border-radius: 8px; padding: 18px; }
+  canvas { width: 100%; height: auto; display: block; background: #ffffff; border-radius: 6px; }
 
-  label { display: block; font-size: 13px; color: #aacbe8; margin: 14px 0 6px; }
+  label { display: block; font-size: 13px; color: #888888; margin: 14px 0 6px; }
   input[type=text] {
     width: 100%; padding: 10px; font-size: 16px; border-radius: 6px;
-    border: 1px solid #ffffff33; background: #0b3d63; color: #fff; font-family: monospace;
+    border: 1px solid #cc222233; background: #ffffff; color: #2a2a2a; font-family: monospace;
   }
   .status { font-size: 13px; margin-top: 8px; min-height: 18px; }
-  .status.ok { color: #7fd67f; }
-  .status.warn { color: #ffb84d; }
-  .status.err { color: #ff6b6b; }
+  .status.ok { color: #2e8b2e; }
+  .status.warn { color: #cc7a00; }
+  .status.err { color: #cc2222; }
 
   button {
-    background: #ffd479; color: #0b3d63; border: none; border-radius: 6px;
+    background: #cc2222; color: #ffffff; border: none; border-radius: 6px;
     padding: 10px 16px; font-size: 14px; font-weight: bold; cursor: pointer; margin: 6px 6px 0 0;
   }
   button:active { transform: scale(0.98); }
-  button.secondary { background: #1a5b8f; color: #fff; }
+  button.secondary { background: #f2f2f2; color: #2a2a2a; border: 1px solid #cc222233; }
 
   .decode-wrap {
     position: relative;
@@ -162,7 +162,7 @@ function indicesToRingBits(indices) {
 
 /* ===================== МАЛЮВАННЯ ===================== */
 function drawAnchors(ctx) {
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = '#cc2222';
   const angles = [90, 210, 330].map(d => d * Math.PI / 180);
   for (const a of angles) {
     ctx.beginPath();
@@ -180,10 +180,10 @@ function drawHub(ctx) {
 function drawDisc(canvas, fullBits) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, 480, 480);
-  ctx.fillStyle = '#0b3d63';
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, 480, 480);
 
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = '#cc2222';
   ctx.beginPath();
   for (let ring = 0; ring < RINGS; ring++) {
     const rInner = INNER_R + ring * RING_GAP;
@@ -199,7 +199,7 @@ function drawDisc(canvas, fullBits) {
     }
   }
   ctx.fill();
-  ctx.strokeStyle = '#ffffff';
+  ctx.strokeStyle = '#cc2222';
   ctx.lineWidth = 1.2;
   ctx.stroke();
 
