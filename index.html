@@ -762,6 +762,7 @@ function tryDecode() {
   // --- КРОК 3: зчитування 10 кілець (6 унікальних + 6 дзеркальних) ---
   const indices = [];
   let totalMismatches = 0;
+  let invalidRings = 0; // row/col ≥6 — математично неможливо для справжнього символу, стовідсоткова ознака браку
 
   for (let ring = 0; ring < RINGS; ring++) {
     const ringMidR = INNER_R + (ring + 0.5) * RING_GAP; // радіус у системі координат ДИСКА (0..480), без масштабу
@@ -794,6 +795,9 @@ function tryDecode() {
 
     const row = (bits[0] << 2) | (bits[1] << 1) | bits[2];
     const col = (bits[3] << 2) | (bits[4] << 1) | bits[5];
+    // алфавіт використовує лише row/col у діапазоні 0..5 (6×6 = 36 позицій);
+    // 6 чи 7 виникає лише через перевернутий старший біт і завжди означає брак
+    if (row > 5 || col > 5) invalidRings++;
     indices.push(row * 6 + col);
   }
 
@@ -803,16 +807,16 @@ function tryDecode() {
     text += indexToChar(idx);
   }
 
-  registerReading(text, totalMismatches);
+  registerReading(text, totalMismatches, invalidRings);
 }
 
 /* накопичення підтверджень + lock-hold пауза перед фіксацією,
    за тим самим принципом, що в registerReading робочого сканера */
-function registerReading(text, mismatches) {
+function registerReading(text, mismatches, invalidRings) {
   if (locking) return;
 
-  if (mismatches > NOISE_MISMATCH_THRESHOLD) {
-    logEvent(`read: ШУМ mismatches=${mismatches} (поріг ${NOISE_MISMATCH_THRESHOLD})`);
+  if (mismatches > NOISE_MISMATCH_THRESHOLD || invalidRings > 0) {
+    logEvent(`read: ШУМ mismatches=${mismatches} invalid=${invalidRings} (поріг ${NOISE_MISMATCH_THRESHOLD})`);
     scanHistory = [];
     targetRingProgress = 0;
     setStatus('Сирий шум, шукаю патерн...', '');
