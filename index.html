@@ -1,178 +1,452 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="uk">
 <head>
-<meta charset="UTF-8">
-<title>Кільцевий шифр — кодер/декодер (тест)</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Сканер диска</title>
 <style>
-  * { box-sizing: border-box; }
-  body {
-    background: #0b3d63;
-    color: #fff;
-    font-family: 'Georgia', serif;
-    margin: 0;
-    padding: 20px 12px 60px;
-  }
-  h1 { font-size: 20px; font-weight: normal; text-align: center; margin: 0 0 4px; }
-  .sub { text-align: center; color: #aacbe8; font-size: 13px; margin-bottom: 24px; }
+* { box-sizing: border-box; }
 
-  .tabs { display: flex; justify-content: center; gap: 8px; margin-bottom: 20px; }
-  .tab {
-    background: #0e4a78; border: 1px solid #ffffff33; color: #aacbe8;
-    padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 14px;
-  }
-  .tab.active { background: #ffd479; color: #0b3d63; font-weight: bold; }
+html, body {
+  overflow-x: hidden;
+}
 
-  .panel { display: none; max-width: 520px; margin: 0 auto; }
-  .panel.active { display: block; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: #0b3d63;
+  font-family: sans-serif;
+  color: #fff;
+  padding: 12px;
+}
 
-  .card { background: #0e4a78; border: 2px solid #ffffff33; border-radius: 8px; padding: 18px; }
-  canvas { width: 100%; height: auto; display: block; background: #0b3d63; border-radius: 6px; }
+/* ===== ВЕРХНІ ПЕРЕМИКАЧІ (мова + тема диска) ===== */
 
-  label { display: block; font-size: 13px; color: #aacbe8; margin: 14px 0 6px; }
-  input[type=text] {
-    width: 100%; padding: 10px; font-size: 16px; border-radius: 6px;
-    border: 1px solid #ffffff33; background: #0b3d63; color: #fff; font-family: monospace;
-  }
-  .status { font-size: 13px; margin-top: 8px; min-height: 18px; }
-  .status.ok { color: #7fd67f; }
-  .status.warn { color: #ffb84d; }
-  .status.err { color: #ff6b6b; }
+.top-controls {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 20;
+}
 
-  button {
-    background: #ffd479; color: #0b3d63; border: none; border-radius: 6px;
-    padding: 10px 16px; font-size: 14px; font-weight: bold; cursor: pointer; margin: 6px 6px 0 0;
-  }
-  button:active { transform: scale(0.98); }
-  button.secondary { background: #1a5b8f; color: #fff; }
+.theme-toggle {
+  font-size: 12px;
+  font-family: monospace;
+  color: rgba(255,255,255,0.7);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
 
-  .decode-wrap {
-    position: relative;
-    width: 100%;
-    aspect-ratio: 1 / 1;
-    overflow: hidden;
-    border-radius: 6px;
-    background: #000;
-  }
-  #camVideo {
-    position: absolute; top: 0; left: 0;
-    width: 100%; height: 100%;
-    object-fit: cover;
-  }
-  #sampleCanvas {
-    position: absolute; top: 0; left: 0;
-    width: 100%; height: 100%;
-    background: transparent;
-    pointer-events: none;
-  }
-  #decCanvas {
-    position: absolute; top: 0; left: 0;
-    width: 100%; height: 100%;
-    background: transparent;
-    pointer-events: none;
-  }
+.lang-toggle {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.85);
+  background: transparent;
+  color: #fff;
+  font-family: monospace;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.lang-toggle:focus, .lang-toggle:focus-visible { outline: none; }
+.lang-toggle:active { background: transparent; }
+.lang-toggle.pressed { background: rgba(255,255,255,0.25); }
+@media (hover: hover) {
+  .lang-toggle:hover { background: rgba(255,255,255,0.1); }
+}
 
-  .result {
-    margin-top: 14px; font-size: 22px; letter-spacing: 2px;
-    font-family: monospace; word-break: break-all; min-height: 32px;
-  }
-  .badge {
-    display: inline-block; padding: 3px 10px; border-radius: 4px;
-    font-size: 12px; margin-left: 8px; vertical-align: middle;
-  }
-  .badge.ok { background: #1e5c1e; color: #a4e8a4; }
-  .badge.err { background: #5c1e1e; color: #e8a4a4; }
+/* ===== АКОРДЕОН З ОКОМ ===== */
 
-  #centerGuide {
-    position: absolute; top: 50%; left: 50%;
-    width: 55%; height: 55%;
-    transform: translate(-50%, -50%);
-    border: 2px dashed rgba(255,255,255,0.35);
-    border-radius: 12px;
-    pointer-events: none;
-  }
+.accordion-container {
+  width: min(460px, 92vw);
+  min-height: 460px;
+  background-color: #0b3d63;
+  position: relative;
+  display: grid;
+  /* старт: верхній рядок (сканер) згорнутий, роздільник фіксований, низ (текст) займає решту */
+  grid-template-rows: 0fr auto 1fr;
+  transition: grid-template-rows 2.2s cubic-bezier(0.77, 0, 0.175, 1);
+}
 
-  textarea#logArea {
-    width: 100%; box-sizing: border-box; background: #0b3d63; color: #aacbe8;
-    font-family: monospace; font-size: 11px; line-height: 1.4;
-    border: 1px solid #ffffff33; border-radius: 6px; padding: 8px; resize: vertical;
-  }
+.content-area {
+  overflow: hidden;
+  box-sizing: border-box;
+  padding: 0 6px;
+  color: #fff;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 2.2s cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+.content-inner {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+}
+
+.top-content { grid-template-rows: 0fr; }
+.bottom-content { grid-template-rows: 1fr; }
+
+.top-content .content-inner {
+  padding-bottom: 24px;
+}
+
+/* стрілка вниз натиснута — сканер відкрито, око розплющене */
+.accordion-container.state-down { grid-template-rows: 1fr auto 0fr; }
+.accordion-container.state-down .top-content { grid-template-rows: 1fr; }
+.accordion-container.state-down .bottom-content { grid-template-rows: 0fr; }
+
+.divider-wrapper {
+  width: 100%;
+  max-width: 320px;
+  height: 120px;
+  margin: 0 auto 36px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  z-index: 10;
+}
+
+.line {
+  flex-grow: 1;
+  height: 2px;
+  background-color: rgba(255, 255, 255, 0.9);
+}
+
+.eye-box {
+  width: 130px;
+  height: 90px;
+  position: relative;
+  flex-shrink: 0;
+}
+.eye-box svg { width: 100%; height: 100%; }
+
+.eye-outline, .eyelid, .arrow-btn {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.eyelid {
+  fill: #0b3d63;
+  transform: translateY(0%);
+  transition: transform 2.2s cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+.pupil { fill: none; stroke: #ffffff; stroke-width: 16; }
+
+.arrow-container {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 30px;
+  height: 20px;
+  cursor: pointer;
+  z-index: 11;
+}
+
+.arrow-top {
+  top: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.4s ease 0s, visibility 0.4s ease 0s;
+}
+.arrow-bottom {
+  bottom: 0;
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.4s ease 2.2s, visibility 0.4s ease 2.2s;
+}
+
+.arrow-btn { fill: #0b3d63; transition: fill 0.2s; }
+.arrow-container:hover .arrow-btn { fill: rgba(255, 255, 255, 0.2); }
+
+.accordion-container.state-down .eyelid { transform: translateY(-155%); }
+
+.accordion-container.state-down .arrow-bottom {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.4s ease 0s, visibility 0.4s ease 0s;
+}
+.accordion-container.state-down .arrow-top {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.4s ease 2.2s, visibility 0.4s ease 2.2s;
+}
+
+/* ===== СКАНЕР ===== */
+
+.scan-overlay {
+  position: relative;
+  width: 100%;
+  max-width: 340px;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border: 2px solid rgba(255,255,255,0.4);
+  background: #000;
+}
+
+video {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  z-index: 1;
+}
+
+#sampleCanvas {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: transparent;
+  pointer-events: none;
+  z-index: 2;
+}
+
+#decCanvas {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: transparent;
+  pointer-events: none;
+  z-index: 3;
+}
+
+#centerGuide {
+  position: absolute; top: 50%; left: 50%;
+  width: 55%; height: 55%;
+  transform: translate(-50%, -50%);
+  border: 2px dashed rgba(255,255,255,0.35);
+  border-radius: 12px;
+  pointer-events: none;
+  z-index: 2;
+  display: none;
+}
+
+.corner { position: absolute; width: 18px; height: 18px; z-index: 4; }
+.corner.tl { top: 8px; left: 8px; border-top: 2px solid #fff; border-left: 2px solid #fff; }
+.corner.tr { top: 8px; right: 8px; border-top: 2px solid #fff; border-right: 2px solid #fff; }
+.corner.bl { bottom: 8px; left: 8px; border-bottom: 2px solid #fff; border-left: 2px solid #fff; }
+.corner.br { bottom: 8px; right: 8px; border-bottom: 2px solid #fff; border-right: 2px solid #fff; }
+
+.scan-line {
+  position: absolute;
+  left: 3%; right: 3%;
+  height: 2px;
+  background: rgba(255,255,255,0.7);
+  z-index: 5;
+  top: 5%;
+  animation: scanmove 2s ease-in-out infinite;
+}
+@keyframes scanmove {
+  0%, 100% { top: 5%; }
+  50% { top: 95%; }
+}
+
+.scan-status {
+  font-size: 11px;
+  font-family: monospace;
+  color: rgba(255,255,255,0.6);
+  min-height: 14px;
+}
+
+/* ===== РЕЗУЛЬТАТ (ПОСЛАННЯ) ===== */
+
+.result-panel {
+  width: 100%;
+  padding: 24px 20px;
+  max-width: 320px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.field-label {
+  display: block;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fff;
+  font-family: monospace;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.field-value {
+  color: rgba(255,255,255,0.8);
+  font-family: monospace;
+  font-size: 15px;
+  line-height: 1.7;
+  font-style: italic;
+}
+
+.type-cursor {
+  display: inline-block;
+  color: rgba(255,255,255,0.75);
+  font-style: normal;
+  animation: caretBlink 0.85s steps(1) infinite;
+}
+.type-cursor.done, .type-cursor.idle { display: none; }
+
+@keyframes caretBlink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* ===== ЛОГ ДЛЯ ДЕБАГУ ===== */
+
+.log-card {
+  width: min(460px, 92vw);
+  margin: 16px auto 0;
+  background: #0e4a78;
+  border: 2px solid #ffffff33;
+  border-radius: 8px;
+  padding: 14px;
+}
+.log-card label {
+  display: block;
+  font-size: 12px;
+  color: #aacbe8;
+  margin-bottom: 8px;
+}
+.log-card textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0b3d63;
+  color: #aacbe8;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  border: 1px solid #ffffff33;
+  border-radius: 6px;
+  padding: 8px;
+  resize: vertical;
+}
+.log-card button {
+  background: #ffd479;
+  color: #0b3d63;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: bold;
+  cursor: pointer;
+  margin: 8px 6px 0 0;
+}
+.log-card button.secondary { background: #1a5b8f; color: #fff; }
 </style>
 </head>
 <body>
 
-<h1>Кільцевий шифр Полібія</h1>
-<div class="sub">10 кілець · дзеркальна перевірка · до 19 символів у одному статичному диску</div>
-
-<div class="theme-toggle" style="text-align:center; margin-bottom:16px; font-size:13px; color:#aacbe8;">
-  <label style="cursor:pointer; margin-right:15px; border-right: 1px solid #4a5c6d; padding-right: 15px;">
-    <input type="radio" name="langToggle" value="UK" checked onchange="onLangToggle()"> 🇺🇦 Укр
-  </label>
-  <label style="cursor:pointer; margin-right:20px;">
-    <input type="radio" name="langToggle" value="EN" onchange="onLangToggle()"> 🇬🇧 Eng
-  </label>
-  
-  <label style="cursor:pointer;">
+<div class="top-controls">
+  <label class="theme-toggle">
     <input type="checkbox" id="themeToggle" onchange="onThemeToggle()">
-    Світла тема диска (друк на білому)
+    <span id="themeToggleLabel">Світлий диск</span>
   </label>
-  <span id="colorPickerWrap" style="display:none; margin-left: 10px;">
-    Колір символів: <input type="color" id="fgColorPicker" value="#16222c" onchange="onTextInput()" style="vertical-align: middle; cursor:pointer;">
-  </span>
+  <button class="lang-toggle" id="langToggle" onclick="toggleLang(this)">УКР</button>
 </div>
 
-<div class="tabs">
-  <div class="tab active" onclick="switchTab('enc')">Кодер</div>
-  <div class="tab" onclick="switchTab('dec')">Декодер (камера)</div>
-</div>
+<div class="accordion-container" id="accordion">
 
-<div class="panel active" id="panel-enc">
-  <div class="card">
-    <canvas id="encCanvas" width="480" height="480"></canvas>
-    <label id="textLabel">Текст (до 19 символів)</label>
-    <input type="text" id="textInput" maxlength="19" value="ТЕО КІТ" oninput="onTextInput()">
-    <div class="status" id="encStatus"></div>
-    <div style="margin-top:10px; display:flex; gap:10px; justify-content:center;">
-      <button onclick="downloadPNG()">Завантажити PNG</button>
-      <button onclick="downloadSVG()">Завантажити SVG</button>
+  <div class="content-area top-content">
+    <div class="content-inner">
+      <div class="scan-overlay">
+        <video id="camVideo" autoplay playsinline muted></video>
+        <canvas id="sampleCanvas" width="340" height="340"></canvas>
+        <canvas id="decCanvas" width="340" height="340"></canvas>
+        <div id="centerGuide"></div>
+        <span class="corner tl"></span>
+        <span class="corner tr"></span>
+        <span class="corner bl"></span>
+        <span class="corner br"></span>
+        <div class="scan-line"></div>
+      </div>
+      <div class="scan-status" id="scanStatus"></div>
     </div>
   </div>
+
+  <div class="divider-wrapper">
+
+    <div class="arrow-container arrow-top" id="btn-up" onclick="onUpArrow()">
+      <svg viewBox="0 0 40 20">
+        <polygon points="20,2 2,18 38,18" class="arrow-btn"/>
+      </svg>
+    </div>
+
+    <div class="line"></div>
+
+    <div class="eye-box">
+      <svg viewBox="0 0 300 200" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <clipPath id="blueprint-clip">
+            <path d="M 20 100 Q 150 10, 280 100 Q 150 190, 20 100 Z" />
+          </clipPath>
+        </defs>
+        <g clip-path="url(#blueprint-clip)">
+          <circle cx="150" cy="100" r="24" class="pupil" />
+          <path d="M 20 100 Q 150 -40, 280 100 L 280 350 L 20 350 Z" class="eyelid" />
+        </g>
+        <path d="M 20 100 Q 150 10, 280 100 Q 150 190, 20 100 Z" class="eye-outline" />
+      </svg>
+    </div>
+
+    <div class="line"></div>
+
+    <div class="arrow-container arrow-bottom" id="btn-down" onclick="onDownArrow()">
+      <svg viewBox="0 0 40 20">
+        <polygon points="2,2 38,2 20,18" class="arrow-btn"/>
+      </svg>
+    </div>
+
+  </div>
+
+  <div class="content-area bottom-content">
+    <div class="content-inner">
+      <div class="result-panel">
+        <span class="field-label" id="fieldLabel">Послання:</span>
+        <span class="field-value" id="msgText"></span><span class="type-cursor idle" id="msgCursor">▍</span>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-<div class="panel" id="panel-dec">
-  <div class="card">
-    <div class="decode-wrap">
-      <video id="camVideo" autoplay playsinline muted></video>
-      <canvas id="sampleCanvas" width="340" height="340"></canvas>
-      <canvas id="decCanvas" width="340" height="340"></canvas>
-      <div id="centerGuide" style="display:none;"></div>
-    </div>
-    <div class="status" id="decStatus">Радар вимкнено</div>
-    <div class="result" id="decResult"></div>
-    <button onclick="startCam()">Запустити камеру</button>
-    <button class="secondary" onclick="stopCam()">Зупинити</button>
-  </div>
-
-  <div class="card" style="margin-top:14px;">
-    <label style="margin-top:0;">Лог (для дебагу — скинь мені весь текст, коли щось піде не так)</label>
-    <textarea id="logArea" readonly rows="10"></textarea>
-    <button onclick="copyLog()">Копіювати</button>
-    <button class="secondary" onclick="clearLog()">Очистити</button>
-  </div>
+<div class="log-card">
+  <label>Лог (для дебагу — скинь мені весь текст, коли щось піде не так)</label>
+  <textarea id="logArea" readonly rows="8"></textarea>
+  <button onclick="copyLog()">Копіювати</button>
+  <button class="secondary" onclick="clearLog()">Очистити</button>
 </div>
 
 <script>
-/* ===================== АЛФАВІТ ПОЛІБІЯ 7x7 ===================== */
-// Таблиця 7х7 має 49 комірок (0..48). Індекс 48 = маркер "кінець".
-// Доступно 48 символів для тексту.
+/* ================================================================
+   МОВА ІНТЕРФЕЙСУ + АЛФАВІТ ДЕКОДУВАННЯ — той самий перемикач керує
+   обома, бо диск може бути закодований і українською, і англійською,
+   а декодер мусить знати, яку таблицю символів застосовувати.
+   ================================================================ */
 const ALPHABETS = {
   UK: "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯ0123456789 '.,@".split(''),
   EN: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,-?!':\"@/&".split('')
 };
-let CURRENT_LANG = 'UK';
-let CURRENT_ALPHABET = ALPHABETS.UK;
 const END_INDEX = 48;
+let CURRENT_ALPHABET = ALPHABETS.UK;
 let charToIndex = {};
-
 function initAlphabet() {
   charToIndex = {};
   CURRENT_ALPHABET.forEach((c, i) => charToIndex[c] = i);
@@ -180,235 +454,98 @@ function initAlphabet() {
 initAlphabet();
 function indexToChar(i) { return CURRENT_ALPHABET[i] ?? '?'; }
 
-function onLangToggle() {
-  const radios = document.getElementsByName('langToggle');
-  for (let r of radios) {
-    if (r.checked) CURRENT_LANG = r.value;
+const STR = {
+  UK: {
+    themeToggleLabel: 'Світлий диск',
+    langBtn: 'УКР',
+    fieldLabel: 'Послання:',
+    placeholderStub: 'Тут з’явиться розшифроване послання.',
+    statusSearchingAnchors: 'Пошук якорів...',
+    statusStabilizing: 'Стабілізація геометрії...',
+    statusTooClose: 'Занадто близько — трохи відсунь',
+    statusRawNoise: 'Сирий шум, шукаю патерн...',
+    statusHubUnconfirmed: 'Геометрія не підтверджена, шукаю...',
+    statusCandidate: (cur, total) => `Кандидат (${cur}/${total})`,
+    statusCameraError: (msg) => `Помилка камери: ${msg}`,
+  },
+  EN: {
+    themeToggleLabel: 'Light disc',
+    langBtn: 'ENG',
+    fieldLabel: 'Message:',
+    placeholderStub: 'The decoded message will appear here.',
+    statusSearchingAnchors: 'Searching anchors...',
+    statusStabilizing: 'Stabilizing geometry...',
+    statusTooClose: 'Too close — move back a bit',
+    statusRawNoise: 'Raw noise, seeking pattern...',
+    statusHubUnconfirmed: 'Geometry not confirmed, searching...',
+    statusCandidate: (cur, total) => `Candidate (${cur}/${total})`,
+    statusCameraError: (msg) => `Camera error: ${msg}`,
   }
+};
+
+function detectLang() {
+  const saved = localStorage.getItem('camDiscLang');
+  if (saved === 'UK' || saved === 'EN') return saved;
+  const deviceLang = (navigator.language || 'en').slice(0, 2).toLowerCase();
+  return (deviceLang === 'uk' || deviceLang === 'ru') ? 'UK' : 'EN';
+}
+let CURRENT_LANG = detectLang();
+let showingStub = true; // чи зараз у полі повідомлення заглушка, а не реальний розшифрований текст
+
+function toggleLang(btn) {
+  CURRENT_LANG = CURRENT_LANG === 'UK' ? 'EN' : 'UK';
   CURRENT_ALPHABET = ALPHABETS[CURRENT_LANG];
   initAlphabet();
-  onTextInput(); // перевірити текст і перемалювати
+  localStorage.setItem('camDiscLang', CURRENT_LANG);
+  applyLang();
+  if (btn) {
+    btn.blur();
+    btn.classList.add('pressed');
+    setTimeout(() => btn.classList.remove('pressed'), 180);
+  }
 }
 
-/* ===================== ГЕОМЕТРІЯ ДИСКА ===================== */
+function applyLang() {
+  const t = STR[CURRENT_LANG];
+  document.getElementById('langToggle').textContent = t.langBtn;
+  document.getElementById('themeToggleLabel').textContent = t.themeToggleLabel;
+  document.getElementById('fieldLabel').textContent = t.fieldLabel;
+  if (showingStub) setStub();
+}
+
+function setStub() {
+  document.getElementById('msgText').textContent = STR[CURRENT_LANG].placeholderStub;
+  document.getElementById('msgCursor').className = 'type-cursor idle';
+  showingStub = true;
+}
+
+/* ================================================================
+   ГЕОМЕТРІЯ ДИСКА (перенесено з кодера-сканера один в один)
+   ================================================================ */
 const CX = 240, CY = 240;
 const ANCHOR_R = 200;
-const ANCHOR_SIZE = 14;
 const START_ANGLE = Math.PI / 2;
 const RINGS = 10;
 const SECTORS = 12; // секторів на один символьний слот (6 даних + 6 дзеркало)
 const INNER_R = 40, OUTER_R = 175;
 const RING_GAP = (OUTER_R - INNER_R) / RINGS;
 const HUB_R = 16;
-// Кількість секторів і символів на кільце ("aggressive" варіант, 19 символів):
-// кільця 0-3 → 1 символ (12 сект.), кільця 4-6 → 2 символи (24 сект.),
-// кільця 7-9 → 3 символи (36 сект., дуга на кільці 7 ≈ 24.6 px — на межі).
 const RING_SECTORS       = [12, 12, 12, 12, 24, 24, 24, 36, 36, 36];
 const RING_SYMBOLS_COUNT = [ 1,  1,  1,  1,  2,  2,  2,  3,  3,  3];
 const TOTAL_SYMBOLS = RING_SYMBOLS_COUNT.reduce((a, b) => a + b, 0); // = 19
-/* єдине джерело правди для кольорової схеми — керує і кодером (drawDisc),
-   і декодером (isMark нижче). Раніше це були два незалежні перемикачі,
-   що й призводило до розсинхрону — тепер один прапорець на все. */
+
 let DISC_THEME = 'dark'; // 'dark' = темний фон/світлі знаки, 'light' = світлий фон/темні знаки
 
-// координати ЧОТИРЬОХ якорів у системі координат диска (0..480) — єдине
-// джерело правди для їхніх позицій. Четвертий якір (верх, 270°) додано,
-// щоб мати 4 відповідності точок і рахувати повну гомографію (проєктивну
-// корекцію нахилу), а не афінне наближення на 3 точках — так само, як QR
-// використовує кілька опорних точок для компенсації перспективи.
 const ANCHOR_ANGLES = [90, 270, 210, 330].map(d => d * Math.PI / 180); // низ, верх, ліво, право
 const SRC_BOTTOM = { x: CX + Math.cos(ANCHOR_ANGLES[0]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[0]) * ANCHOR_R };
 const SRC_TOP    = { x: CX + Math.cos(ANCHOR_ANGLES[1]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[1]) * ANCHOR_R };
 const SRC_LEFT   = { x: CX + Math.cos(ANCHOR_ANGLES[2]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[2]) * ANCHOR_R };
 const SRC_RIGHT  = { x: CX + Math.cos(ANCHOR_ANGLES[3]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[3]) * ANCHOR_R };
 
-/* ===================== КОДУВАННЯ ТЕКСТУ В БІТИ ===================== */
-function encodeTextToRings(text) {
-  const chars = text.split('').filter(c => charToIndex[c] !== undefined).slice(0, TOTAL_SYMBOLS);
-  // Плоский масив усіх символьних індексів (TOTAL_SYMBOLS позицій, END_INDEX для заповнення)
-  const flatIndices = [];
-  for (let i = 0; i < TOTAL_SYMBOLS; i++) {
-    flatIndices.push(i < chars.length ? charToIndex[chars[i]] : END_INDEX);
-  }
-  return flatIndices;
-}
-
-function indicesToRingBits(flatIndices) {
-  // Повертає масив [RINGS][RING_SECTORS[ring]] бітів (0/1).
-  // Дзеркало відносно вертикальної осі диска (90°-270°):
-  // сектор k ↔ сектор (numSectors-1-k). Для символу s:
-  //   дані:    dataBase   = s * SECTORS             (0 або 12)
-  //   дзеркало: mirrorBase = (numSymbols-s)*SECTORS - 1 (11 або 23 або 11)
-  // Перевірка: 12 сект., 1 символ: дані=0..5, дзеркало=11..6 (як раніше).
-  // Перевірка: 24 сект., 2 символи: A дані=0..5, A дзеркало=23..18;
-  //                              B дані=12..17, B дзеркало=11..6.
-  const fullBits = [];
-  let pos = 0;
-  for (let ring = 0; ring < RINGS; ring++) {
-    const numSectors = RING_SECTORS[ring];
-    const numSymbols = RING_SYMBOLS_COUNT[ring];
-    const ringBits = new Array(numSectors);
-    for (let s = 0; s < numSymbols; s++) {
-      const idx = flatIndices[pos++];
-      // Тепер таблиця 7x7, тому ділимо на 7
-      const row = Math.floor(idx / 7), col = idx % 7;
-      const bits6 = [
-        (row >> 2) & 1, (row >> 1) & 1, row & 1,
-        (col >> 2) & 1, (col >> 1) & 1, col & 1
-      ];
-      const dataBase   = s * SECTORS;
-      const mirrorBase = (numSymbols - s) * SECTORS - 1;
-      for (let k = 0; k < 6; k++) {
-        ringBits[dataBase   + k] = bits6[k];
-        ringBits[mirrorBase - k] = bits6[k]; // дзеркало відносно вертикальної осі
-      }
-    }
-    fullBits.push(ringBits);
-  }
-  return fullBits;
-}
-
-/* ===================== МАЛЮВАННЯ ===================== */
-function drawAnchors(ctx, fg) {
-  ctx.fillStyle = fg;
-  for (const p of [SRC_BOTTOM, SRC_TOP, SRC_LEFT, SRC_RIGHT]) {
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, ANCHOR_SIZE, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-function drawHub(ctx, fg) {
-  ctx.fillStyle = fg;
-  ctx.beginPath();
-  ctx.arc(CX, CY, HUB_R, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawDisc(canvas, fullBits, transparentMode = false) {
-  const ctx = canvas.getContext('2d');
-  const bg = DISC_THEME === 'dark' ? '#0b3d63' : '#f4f1ea';
-  const fg = DISC_THEME === 'dark' ? '#ffffff' : document.getElementById('fgColorPicker').value;
-
-  ctx.clearRect(0, 0, 480, 480);
-  if (!transparentMode) {
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, 480, 480);
-  }
-
-  ctx.fillStyle = fg;
-  ctx.beginPath();
-  for (let ring = 0; ring < RINGS; ring++) {
-    const rInner = INNER_R + ring * RING_GAP;
-    const rOuter = INNER_R + (ring + 1) * RING_GAP;
-    const numSectors = RING_SECTORS[ring];
-    for (let sector = 0; sector < numSectors; sector++) {
-      if (fullBits[ring][sector] !== 1) continue;
-      const a0 = START_ANGLE + (sector / numSectors) * Math.PI * 2;
-      const a1 = START_ANGLE + ((sector + 1) / numSectors) * Math.PI * 2;
-      ctx.moveTo(CX + Math.cos(a0) * rOuter, CY + Math.sin(a0) * rOuter);
-      ctx.arc(CX, CY, rOuter, a0, a1);
-      ctx.arc(CX, CY, rInner, a1, a0, true);
-      ctx.closePath();
-    }
-  }
-  ctx.fill();
-  ctx.strokeStyle = fg;
-  ctx.lineWidth = 1.2;
-  ctx.stroke();
-
-  drawHub(ctx, fg);
-  drawAnchors(ctx, fg);
-}
-
-/* ===================== КОДЕР UI ===================== */
-function onTextInput() {
-  const raw = document.getElementById('textInput').value.toUpperCase();
-  document.getElementById('textInput').value = raw;
-  
-  const label = document.getElementById('textLabel');
-  label.textContent = `Текст (до 19 символів, ${CURRENT_LANG === 'UK' ? 'укр. літери/цифри/знаки' : 'англ. літери/цифри/знаки'})`;
-
-  const status = document.getElementById('encStatus');
-  const bad = raw.split('').filter(c => charToIndex[c] === undefined);
-  if (bad.length) {
-    status.className = 'status warn';
-    status.textContent = `Непідтримані символи буде пропущено: ${[...new Set(bad)].join(' ')}`;
-  } else if (raw.length > TOTAL_SYMBOLS) {
-    status.className = 'status warn';
-    status.textContent = `Влізе лише перші ${TOTAL_SYMBOLS} символів`;
-  } else {
-    status.className = 'status ok';
-    status.textContent = `${Math.min(raw.length, TOTAL_SYMBOLS)} / ${TOTAL_SYMBOLS} символів`;
-  }
-
-  const indices = encodeTextToRings(raw);
-  const bits = indicesToRingBits(indices);
-  drawDisc(document.getElementById('encCanvas'), bits);
-}
-
-function downloadPNG() {
-  const canvas = document.getElementById('encCanvas');
-  const raw = document.getElementById('textInput').value.toUpperCase();
-  const bits = indicesToRingBits(encodeTextToRings(raw));
-  drawDisc(canvas, bits, true); // малюємо без фону для експорту
-  
-  const a = document.createElement('a');
-  a.download = 'ring-cipher.png';
-  a.href = canvas.toDataURL('image/png');
-  a.click();
-  
-  drawDisc(canvas, bits, false); // повертаємо фон на екран
-}
-
-function downloadSVG() {
-  const raw = document.getElementById('textInput').value.toUpperCase();
-  const bits = indicesToRingBits(encodeTextToRings(raw));
-  const fg = DISC_THEME === 'dark' ? '#ffffff' : document.getElementById('fgColorPicker').value;
-  
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 480" width="480" height="480">\n`;
-  
-  // Якорі
-  for (const p of [SRC_BOTTOM, SRC_TOP, SRC_LEFT, SRC_RIGHT]) {
-    svg += `  <circle cx="${p.x}" cy="${p.y}" r="${ANCHOR_SIZE}" fill="${fg}" />\n`;
-  }
-  // Втулка
-  svg += `  <circle cx="${CX}" cy="${CY}" r="${HUB_R}" fill="${fg}" />\n`;
-  
-  // Кільця
-  svg += `  <path fill="${fg}" stroke="${fg}" stroke-width="1.2" d="`;
-  for (let ring = 0; ring < RINGS; ring++) {
-    const rInner = INNER_R + ring * RING_GAP;
-    const rOuter = INNER_R + (ring + 1) * RING_GAP;
-    const numSectors = RING_SECTORS[ring];
-    for (let sector = 0; sector < numSectors; sector++) {
-      if (bits[ring][sector] !== 1) continue;
-      const a0 = START_ANGLE + (sector / numSectors) * Math.PI * 2;
-      const a1 = START_ANGLE + ((sector + 1) / numSectors) * Math.PI * 2;
-      
-      const p0X = CX + Math.cos(a0) * rOuter, p0Y = CY + Math.sin(a0) * rOuter;
-      const p1X = CX + Math.cos(a1) * rOuter, p1Y = CY + Math.sin(a1) * rOuter;
-      const p2X = CX + Math.cos(a1) * rInner, p2Y = CY + Math.sin(a1) * rInner;
-      const p3X = CX + Math.cos(a0) * rInner, p3Y = CY + Math.sin(a0) * rInner;
-      
-      svg += `M ${p0X.toFixed(2)} ${p0Y.toFixed(2)} `;
-      svg += `A ${rOuter.toFixed(2)} ${rOuter.toFixed(2)} 0 0 1 ${p1X.toFixed(2)} ${p1Y.toFixed(2)} `;
-      svg += `L ${p2X.toFixed(2)} ${p2Y.toFixed(2)} `;
-      svg += `A ${rInner.toFixed(2)} ${rInner.toFixed(2)} 0 0 0 ${p3X.toFixed(2)} ${p3Y.toFixed(2)} Z `;
-    }
-  }
-  svg += `" />\n</svg>`;
-  
-  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.download = 'ring-cipher.svg';
-  a.href = url;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-/* ===================== ДЕКОДЕР (камера) ===================== */
+/* ================================================================
+   ДЕКОДЕР (камера) — перенесено з кодера-сканера один в один,
+   лише статуси йдуть через STR[CURRENT_LANG] замість хардкоду.
+   ================================================================ */
 
 const ANALYSIS_SIZE = 340;
 
@@ -424,14 +561,8 @@ const floodQueueY = new Int32Array(FLOOD_QUEUE_CAP);
 
 const MIN_TRIANGLE_SIDE_PX = 40;
 const MAX_TRIANGLE_SIDE_PX = 300;
-const MAX_ANGLE_DEVIATION_DEG = 22;
 
-/* ================================================================
-   ОРІЄНТАЦІЯ ДИСКА: обмеження кута повороту (перенесено з робочого сканера)
-   Нижній якір трикутника очікується десь внизу кадру — дозволяє
-   відкидати кандидатів, повернутих під неможливим кутом.
-   ================================================================ */
-const EXPECTED_ROTATION_RAD = Math.PI / 2; // 90° = низ трикутника під центром кадру
+const EXPECTED_ROTATION_RAD = Math.PI / 2;
 const MAX_ROTATION_DEVIATION_DEG = 40;
 const MAX_ROTATION_DEVIATION_RAD = (MAX_ROTATION_DEVIATION_DEG * Math.PI) / 180;
 
@@ -442,44 +573,24 @@ function angleDiffRad(a, b) {
   return diff;
 }
 
-/* ================================================================
-   ПОЛЯРНІСТЬ ДИСКА (перенесено для узгодженості з робочим сканером;
-   тут завжди 'light' — біла руна на темному тлі)
-   ================================================================ */
-/* полярність марок (світлі/темні) виводиться з єдиної DISC_THEME, оголошеної вище */
-
-/* ================================================================
-   ТРЕКІНГ КАДРУ (перенесено, вимкнено за замовчуванням — той самий
-   перемикач і той самий фолбек на повний пошук, що й у робочому сканері)
-   ================================================================ */
 const TRACKING_ENABLED = false;
 const TRACKING_SEARCH_RADIUS = 70;
 const TRACKING_LOST_AFTER = 5;
 let trackedCenter = null;
 let trackedMissCount = 0;
 
-function resetTracking() {
-  trackedCenter = null;
-  trackedMissCount = 0;
-}
-
+function resetTracking() { trackedCenter = null; trackedMissCount = 0; }
 function handleTrackingHit(cx, cy) {
   if (!TRACKING_ENABLED) return;
   trackedCenter = { x: cx, y: cy };
   trackedMissCount = 0;
 }
-
 function handleTrackingMiss() {
   if (!TRACKING_ENABLED || !trackedCenter) return;
   trackedMissCount++;
   if (trackedMissCount >= TRACKING_LOST_AFTER) resetTracking();
 }
 
-/* ================================================================
-   ПЛАВНА АНІМАЦІЯ ТРИКУТНИКА-ФОКУСУ (перенесено з робочого сканера)
-   Окремий requestAnimationFrame-цикл малює незалежно від того, як
-   часто спрацьовує сам детектор (раз на 220мс) — це дає плавність.
-   ================================================================ */
 let lastTriangle = null;
 let targetRingProgress = 0;
 let ringProgress = 0;
@@ -490,27 +601,15 @@ let overlayAnimFrame = null;
 
 const CONFIRM_STREAK = 3;
 const LOCK_HOLD_MS = 550;
-// поріг розбіжностей дзеркала, вище якого читання вважається шумом
-// (аналог "idx === -1" у робочому сканері з одним кільцем)
 const NOISE_MISMATCH_THRESHOLD = 28; // ~25% від загальної кількості дзеркальних пар (114 при 19 символах)
 
 let scanHistory = [];
 let locking = false;
 let camStream = null, scanTimer = null;
-let lockHoldTimeoutId = null; // щоб можна було скасувати заплановане finishScan при ручній зупинці
+let lockHoldTimeoutId = null;
 
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
 
-/* ================================================================
-   ГОМОГРАФІЯ З 4 ВІДПОВІДНОСТЕЙ ТОЧОК (DLT — Direct Linear Transform).
-   Афінне перетворення (3 точки, 6 ступенів свободи) моделює поворот +
-   нерівномірний масштаб + перекіс, але НЕ моделює справжню перспективу
-   (те, як паралельні лінії "сходяться" при нахилі площини до камери).
-   4 точки дають повні 8 ступенів свободи проєктивного перетворення —
-   так само, як QR-коди рахують перспективу за опорними точками.
-   Розв'язується як система 8 лінійних рівнянь (h33 зафіксовано = 1)
-   методом Гаусса з частковим вибором провідного елемента.
-   ================================================================ */
 function solveLinearSystem(A, b) {
   const n = b.length;
   const M = A.map(row => row.slice());
@@ -548,17 +647,6 @@ function applyHomography(H, x, y) {
   return { x: (H.h11 * x + H.h12 * y + H.h13) / w, y: (H.h21 * x + H.h22 * y + H.h23) / w };
 }
 
-function maxAngleDeviation(a, b, c) {
-  function angleAt(opp, s1, s2) {
-    const cosVal = (s1*s1 + s2*s2 - opp*opp) / (2*s1*s2);
-    return Math.acos(Math.max(-1, Math.min(1, cosVal))) * 180 / Math.PI;
-  }
-  const A = angleAt(a,b,c), B = angleAt(b,a,c), C = angleAt(c,a,b);
-  return Math.max(Math.abs(A-60), Math.abs(B-60), Math.abs(C-60));
-}
-
-/* малює пунктирний трикутник (низ — lastTriangle[0]) і графітні цятки,
-   що з'являються по одній з кожним підтвердженим зчитуванням */
 function drawFocusTriangle(displayCtx, W, H) {
   displayCtx.clearRect(0, 0, W, H);
   if (!lastTriangle) return;
@@ -574,8 +662,6 @@ function drawFocusTriangle(displayCtx, W, H) {
   displayCtx.stroke();
   displayCtx.setLineDash([]);
 
-  // нормалізуємо прогрес під фактичну кількість вершин (4, а не завжди 3) —
-  // інакше остання вершина ніколи не досягла б повної яскравості
   const normalizedProgress = (ringProgress / CONFIRM_STREAK) * vertices.length;
   vertices.forEach((p, i) => {
     const alpha = Math.max(0, Math.min(1, normalizedProgress - i));
@@ -599,7 +685,7 @@ function animateOverlay() {
   overlayAnimFrame = requestAnimationFrame(animateOverlay);
 }
 
-async function startCam() {
+async function startScan() {
   try {
     const video = document.getElementById('camVideo');
     camStream = await navigator.mediaDevices.getUserMedia({
@@ -613,26 +699,18 @@ async function startCam() {
     ringProgress = 0;
     locking = false;
     document.getElementById('centerGuide').style.display = 'block';
-    logEvent(`сесія: старт, тема=${DISC_THEME}`);
-    setStatus('Пошук якорів...', '');
-    document.getElementById('decResult').innerHTML = '';
+    logEvent(`сесія: старт, тема=${DISC_THEME}, мова=${CURRENT_LANG}`);
+    setStatus(STR[CURRENT_LANG].statusSearchingAnchors);
     scanTimer = setInterval(scanFrame, 220);
     if (overlayAnimFrame) cancelAnimationFrame(overlayAnimFrame);
     overlayAnimFrame = requestAnimationFrame(animateOverlay);
   } catch (e) {
-    setStatus('Помилка камери: ' + e.message, 'err');
+    setStatus(STR[CURRENT_LANG].statusCameraError(e.message));
+    // не вдалось запустити камеру — повертаємо акордеон у стан очікування
+    document.getElementById('accordion').classList.remove('state-down');
   }
 }
 
-/* Єдина точка зупинки камери й очищення стану — використовується і при
-   ручному натисканні "Зупинити", і при автоматичному завершенні після
-   CONFIRM_STREAK підтверджень (finishScan). Раніше кожен шлях чистив
-   стан по-своєму — тепер один спільний шлях, щоб нічого не забути.
-
-   Явний video.srcObject = null і video.pause() — без цього сам
-   MediaStream і його відеодоріжка (та пам'ять під неї) можуть не
-   звільнитись одразу після stop(), навіть коли track.stop() вже
-   викликано: <video> все ще тримає посилання на потік через srcObject. */
 function teardownCamera() {
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
@@ -655,39 +733,32 @@ function teardownCamera() {
   const sc = document.getElementById('sampleCanvas');
   sc.getContext('2d').clearRect(0, 0, sc.width, sc.height);
   document.getElementById('centerGuide').style.display = 'none';
+  document.getElementById('scanStatus').textContent = '';
 }
 
-function stopCam() {
+function stopScan() {
+  logEvent('сесія: перервано вручну');
   teardownCamera();
-  setStatus('Радар вимкнено', '');
 }
 
 function onThemeToggle() {
   DISC_THEME = document.getElementById('themeToggle').checked ? 'light' : 'dark';
-  document.getElementById('colorPickerWrap').style.display = DISC_THEME === 'light' ? 'inline-block' : 'none';
-  onTextInput(); // перемалювати диск кодера новою темою
   scanHistory = [];
   resetTracking();
   lastTriangle = null;
   targetRingProgress = 0;
   ringProgress = 0;
-  const sampleC = document.getElementById('sampleCanvas');
-  if (sampleC) sampleC.getContext('2d').clearRect(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
-  setStatus(DISC_THEME === 'dark' ? 'Тема: темний диск (світлі знаки)' : 'Тема: світлий диск (темні знаки)', '');
+  logEvent(`тема диска: ${DISC_THEME === 'dark' ? 'темний диск (світлі знаки)' : 'світлий диск (темні знаки)'}`);
 }
 
-function setStatus(text, cls) {
-  const st = document.getElementById('decStatus');
+function setStatus(text) {
+  const st = document.getElementById('scanStatus');
   st.textContent = text;
-  st.className = 'status' + (cls ? ' ' + cls : '');
   logStatusChange(text);
 }
 
 /* ================================================================
-   ЛОГ ДЛЯ ДЕБАГУ. Основне джерело — зміни статусу (через setStatus,
-   з дедуплікацією однакових повторів) + окремі детальні події
-   (кожне зчитування кілець з текстом і розбіжностями, фіксація,
-   шум) там, де сам статус не показує достатньо деталей.
+   ЛОГ ДЛЯ ДЕБАГУ
    ================================================================ */
 const MAX_LOG_LINES = 600;
 let logLines = [];
@@ -697,44 +768,33 @@ function logTimestamp() {
   const d = new Date();
   return d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
-
 function logEvent(msg) {
   logLines.push(`[${logTimestamp()}] ${msg}`);
   if (logLines.length > MAX_LOG_LINES) logLines.shift();
   renderLog();
 }
-
 function logStatusChange(text) {
-  if (text === lastLoggedStatus) return; // не дублюємо однаковий статус щокадру
+  if (text === lastLoggedStatus) return;
   lastLoggedStatus = text;
   logEvent('статус: ' + text);
 }
-
 function renderLog() {
   const area = document.getElementById('logArea');
   if (!area) return;
   area.value = logLines.join('\n');
   area.scrollTop = area.scrollHeight;
 }
-
 async function copyLog() {
   const text = logLines.join('\n');
   try {
     await navigator.clipboard.writeText(text);
-    setStatus('Лог скопійовано', 'ok');
   } catch (e) {
     const area = document.getElementById('logArea');
     area.focus();
     area.select();
-    try {
-      document.execCommand('copy');
-      setStatus('Лог скопійовано', 'ok');
-    } catch (e2) {
-      setStatus('Не вдалось скопіювати: ' + e2.message, 'err');
-    }
+    try { document.execCommand('copy'); } catch (e2) {}
   }
 }
-
 function clearLog() {
   logLines = [];
   lastLoggedStatus = null;
@@ -758,11 +818,11 @@ function scanFrame() {
 }
 
 function tryDecode() {
-  if (locking) return; // триває пауза-утримання перед фіксацією — кадри ігноруємо
+  if (locking) return;
 
   const sc = document.getElementById('sampleCanvas');
   const overlayCtx = sc.getContext('2d');
-  overlayCtx.clearRect(0, 0, sc.width, sc.height); // чистимо раз за цикл, а не щокадру анімації трикутника
+  overlayCtx.clearRect(0, 0, sc.width, sc.height);
 
   const W = ANALYSIS_SIZE, H = ANALYSIS_SIZE;
   const img = analysisCtx.getImageData(0, 0, W, H);
@@ -775,10 +835,6 @@ function tryDecode() {
     return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
   }
 
-  // --- поріг Оцу: один на кадр, сам обчислюється з гістограми яскравості,
-  //     без магічних констант під конкретне освітлення чи тему. Локальний
-  //     варіант (по клітинках) пробувався і виявився надто чутливим до
-  //     текстури фону/шуму камери — ловив зайві плями поза диском. ---
   const hist = new Uint32Array(256);
   let sampleCount = 0;
   for (let i = 0; i < data.length; i += 32) {
@@ -802,7 +858,6 @@ function tryDecode() {
   }
   function isMark(l) { return DISC_THEME === 'dark' ? l > THRESH : l < THRESH; }
 
-  // --- КРОК 1: пошук плям, звужена зона якщо трекінг активний ---
   let searchX0 = 6, searchX1 = W - 6, searchY0 = 6, searchY1 = H - 6;
   if (TRACKING_ENABLED && trackedCenter) {
     searchX0 = Math.max(6, trackedCenter.x - TRACKING_SEARCH_RADIUS);
@@ -856,25 +911,13 @@ function tryDecode() {
   if (markBlobs.length < 4) {
     handleTrackingMiss();
     lastTriangle = null;
-    setStatus('Пошук якорів...', '');
+    setStatus(STR[CURRENT_LANG].statusSearchingAnchors);
     return;
   }
 
-  /* ================================================================
-     КРОК 2: пошук ЧОТИРИКУТНИКА (кайт/ромб) серед кандидатів замість
-     трикутника. 4 якорі диска (низ 90°, верх 270°, ліво 210°, право
-     330°) утворюють фігуру із двома парами рівних суміжних сторін:
-     низ-ліво ≈ низ-право ≈ ліво-право (довга сторона), верх-ліво ≈
-     верх-право (коротка сторона), і діагональ низ-верх — найдовший і
-     найнадійніший орієнтир (діаметр кола, на якому лежать якорі).
-     Використовуємо цю діагональ як опору для масштабу, решту довжин
-     перевіряємо відносно неї з відносним допуском (не жорстким
-     score<0.22, як для трикутника — під нахилом/перспективою
-     пропорції можуть змінюватись сильніше, ніж просто поворот).
-     ================================================================ */
-  const EXP_DIAG = 2 * ANCHOR_R;           // низ-верх (діаметр)
-  const EXP_LONG_SIDE = ANCHOR_R * Math.sqrt(3); // низ-ліво, низ-право, ліво-право
-  const EXP_SHORT_SIDE = ANCHOR_R;               // верх-ліво, верх-право
+  const EXP_DIAG = 2 * ANCHOR_R;
+  const EXP_LONG_SIDE = ANCHOR_R * Math.sqrt(3);
+  const EXP_SHORT_SIDE = ANCHOR_R;
   const QUAD_SHAPE_TOLERANCE = 0.35;
 
   const candidates = markBlobs.slice(0, Math.min(12, markBlobs.length));
@@ -894,7 +937,7 @@ function tryDecode() {
           }
           if (bottom === top) continue;
           const rest = pts.filter(p => p !== bottom && p !== top);
-          if (rest.length !== 2) continue; // дублікат за координатами — пропускаємо
+          if (rest.length !== 2) continue;
           const left = rest[0].x <= rest[1].x ? rest[0] : rest[1];
           const right = rest[0].x <= rest[1].x ? rest[1] : rest[0];
 
@@ -933,7 +976,7 @@ function tryDecode() {
   if (!bestQuad) {
     handleTrackingMiss();
     lastTriangle = null;
-    setStatus(sawOversized ? 'Занадто близько — трохи відсунь' : 'Стабілізація геометрії...', '');
+    setStatus(sawOversized ? STR[CURRENT_LANG].statusTooClose : STR[CURRENT_LANG].statusStabilizing);
     return;
   }
 
@@ -942,22 +985,13 @@ function tryDecode() {
   const cy = (bottomAnchor.y + topAnchor.y + leftAnchor.y + rightAnchor.y) / 4;
   handleTrackingHit(cx, cy);
 
-  // порядок обходу периметра кайта без самоперетину: низ → право → верх → ліво
   lastTriangle = [bottomAnchor, rightAnchor, topAnchor, leftAnchor];
 
-  // гомографія "система координат диска (0..480) -> екран" на основі 4
-  // реально знайдених якорів — повна проєктивна корекція, а не афінне
-  // наближення на 3 точках
   const transform = solveHomography(
     [SRC_BOTTOM, SRC_TOP, SRC_LEFT, SRC_RIGHT],
     [bottomAnchor, topAnchor, leftAnchor, rightAnchor]
   );
 
-  /* Незалежна перевірка геометрії: центральна втулка. З 4-точковою
-     гомографією ця перевірка вже змістовніша, ніж була з афінним
-     наближенням (де похибка на периферії "гасилась" ближче до центру
-     трикутника) — проєктивні члени гомографії (h31,h32) можуть помітно
-     зсунути прогнозований центр, якщо підгонка невдала. */
   const predictedHub = applyHomography(transform, CX, CY);
   const hubScaleEstimate = dist(bottomAnchor, topAnchor) / (2 * ANCHOR_R);
   const HUB_CHECK_TOLERANCE_PX = Math.max(12, hubScaleEstimate * HUB_R * 1.3);
@@ -969,26 +1003,13 @@ function tryDecode() {
     handleTrackingMiss();
     scanHistory = [];
     targetRingProgress = 0;
-    setStatus('Геометрія не підтверджена (втулка), шукаю...', '');
+    setStatus(STR[CURRENT_LANG].statusHubUnconfirmed);
     return;
   }
 
-  /* ================================================================
-     КАЛІБРУВАННЯ ПОРОГУ ВІД САМОГО ДИСКА. Глобальний Оцу з усього
-     кадру (вище) страждає, коли частина сцени навколо диска яскравіша
-     чи темніша за сам диск (тінь на одній половині, сонце на іншій,
-     чи просто зайвий фон навколо). Тепер, коли диск уже знайдено,
-     є два гарантовані контрольні зразки: сам якір (завжди колір
-     "знаку") і точка в тихій зоні між кільцями й якорями (завжди
-     колір фону). Беремо їхню середину як поріг — це калібрування під
-     фактичне освітлення ЦЬОГО диска в ЦЬОМУ кадрі, а не статистика
-     всієї сцени. Оцу лишається як старт для самого пошуку якорів
-     (де диска ще не видно) і як резерв, якщо калібрування виглядає
-     сумнівним (зразки фону/знаку майже не відрізняються).
-     ================================================================ */
   const fgLum = lum(Math.round(bottomAnchor.x), Math.round(bottomAnchor.y));
-  const bgAngleDiagram = 30 * Math.PI / 180; // кут, свідомо далекий від усіх 4 якорів (90/210/270/330)
-  const bgRefRadius = (OUTER_R + ANCHOR_R) / 2; // середина тихої зони між кільцями й якорями
+  const bgAngleDiagram = 30 * Math.PI / 180;
+  const bgRefRadius = (OUTER_R + ANCHOR_R) / 2;
   const bgDiagram = { x: CX + Math.cos(bgAngleDiagram) * bgRefRadius, y: CY + Math.sin(bgAngleDiagram) * bgRefRadius };
   const bgScreen = applyHomography(transform, bgDiagram.x, bgDiagram.y);
   const bgLum = lum(Math.round(bgScreen.x), Math.round(bgScreen.y));
@@ -999,12 +1020,10 @@ function tryDecode() {
     logEvent(`калібрування диска ненадійне (fg=${fgLum.toFixed(0)} bg=${bgLum.toFixed(0)}), лишаю Оцу`);
   }
 
-  // --- КРОК 3: зчитування кілець (змінна кількість секторів і символів) ---
-  // Кільця 0-3: 12 секторів, 1 символ. Кільця 4-9: 24 сектори, 2 символи.
-  // Кожен символ займає рівно SECTORS=12 секторів зі своїм дзеркалом.
+  // --- зчитування кілець (змінна кількість секторів і символів) ---
   const indices = [];
   let totalMismatches = 0;
-  let invalidRings = 0; // row/col ≥6 — математично неможливо для справжнього символу
+  let invalidRings = 0;
 
   for (let ring = 0; ring < RINGS; ring++) {
     const ringMidR = INNER_R + (ring + 0.5) * RING_GAP;
@@ -1024,7 +1043,6 @@ function tryDecode() {
     };
 
     for (let s = 0; s < numSymbols; s++) {
-      // Дзеркало відносно вертикальної осі (90°-270°): дані на dataBase+k, дзеркало на mirrorBase-k
       const dataBase   = s * SECTORS;
       const mirrorBase = (numSymbols - s) * SECTORS - 1;
       const bits = [];
@@ -1034,7 +1052,6 @@ function tryDecode() {
         if (left.bit === right.bit) {
           bits.push(left.bit);
         } else {
-          // дзеркальна пара розійшлась — довіряємо впевненішому зчитуванню
           totalMismatches++;
           bits.push(left.confidence >= right.confidence ? left.bit : right.bit);
         }
@@ -1055,8 +1072,6 @@ function tryDecode() {
   registerReading(text, totalMismatches, invalidRings);
 }
 
-/* накопичення підтверджень + lock-hold пауза перед фіксацією,
-   за тим самим принципом, що в registerReading робочого сканера */
 function registerReading(text, mismatches, invalidRings) {
   if (locking) return;
 
@@ -1064,16 +1079,12 @@ function registerReading(text, mismatches, invalidRings) {
     logEvent(`read: ШУМ mismatches=${mismatches} invalid=${invalidRings} (поріг ${NOISE_MISMATCH_THRESHOLD})`);
     scanHistory = [];
     targetRingProgress = 0;
-    setStatus('Сирий шум, шукаю патерн...', '');
+    setStatus(STR[CURRENT_LANG].statusRawNoise);
     return;
   }
 
   logEvent(`read: "${text || '(порожньо)'}" mismatches=${mismatches}`);
 
-  // Порівнюємо серію лише за текстом. Якщо додати сюди ще й mismatches,
-  // лічильник збігів практично ніколи не накопичиться: кількість
-  // розбіжностей дзеркала — шумна величина, що стрибає кадр до кадру
-  // (0, 1, 0, 2...) навіть коли розпізнаний текст уже стабільний.
   if (scanHistory.length && scanHistory[scanHistory.length - 1] === text) {
     scanHistory.push(text);
   } else {
@@ -1081,14 +1092,7 @@ function registerReading(text, mismatches, invalidRings) {
   }
 
   targetRingProgress = Math.min(scanHistory.length, CONFIRM_STREAK);
-
-  const resultEl = document.getElementById('decResult');
-  resultEl.innerHTML = (text || '(порожньо)') +
-    (mismatches === 0
-      ? '<span class="badge ok">OK</span>'
-      : `<span class="badge err">⚠ ${mismatches}</span>`);
-
-  setStatus(`Кандидат (${scanHistory.length}/${CONFIRM_STREAK})`, '');
+  setStatus(STR[CURRENT_LANG].statusCandidate(scanHistory.length, CONFIRM_STREAK));
 
   if (scanHistory.length >= CONFIRM_STREAK && !locking) {
     locking = true;
@@ -1096,24 +1100,84 @@ function registerReading(text, mismatches, invalidRings) {
   }
 }
 
-/* Диск підтверджено CONFIRM_STREAK разів поспіль — камера повністю
-   зупиняється (через teardownCamera), результат лишається на екрані.
-   Наступне сканування вимагає нового натискання "Запустити камеру". */
+/* Диск підтверджено — камера зупиняється, роздільник їде назад угору,
+   око заплющується, а розшифрований текст друкується внизу замість
+   заглушки. Нічого нікуди не зберігається — наступне сканування
+   просто перезапише це поле заново. */
 function finishScan(text, mismatches) {
   logEvent(`LOCK: "${text}" mismatches=${mismatches}`);
   teardownCamera();
-  setStatus('Завершено ✓ — натисни «Запустити камеру» для нового диска', mismatches === 0 ? 'ok' : 'warn');
+  revealMessage(text || '(порожньо)');
+  document.getElementById('accordion').classList.remove('state-down');
 }
 
-/* ===================== ВКЛАДКИ ===================== */
-function switchTab(name) {
-  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', ['enc','dec'][i] === name));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.getElementById('panel-' + name).classList.add('active');
-  if (name !== 'dec') stopCam();
+/* ===== АКОРДЕОН: керування стрілками ===== */
+
+function onDownArrow() {
+  const accordion = document.getElementById('accordion');
+  if (accordion.classList.contains('state-down')) return; // вже відкрито/сканується
+  accordion.classList.add('state-down');
+  startScan();
 }
 
-onTextInput();
+/* стрілка вгору під час сканування — перериває без результату й повертає все назад */
+function onUpArrow() {
+  stopScan();
+  document.getElementById('accordion').classList.remove('state-down');
+}
+
+/* ===== ВИВІД / ДРУКАРСЬКА МАШИНКА (одне поле — саме послання) ===== */
+
+const ACCORDION_TRANSITION_MS = 2200; // збігається з CSS transition роздільника
+const TYPE_SPEED_MS = 40;
+
+let revealToken = 0;
+
+function typeInto(elId, cursorId, text, speed, myToken) {
+  return new Promise((resolve) => {
+    const el = document.getElementById(elId);
+    const cursor = document.getElementById(cursorId);
+    if (!el) { resolve(); return; }
+    let i = 0;
+    const timer = setInterval(() => {
+      if (myToken !== revealToken) { clearInterval(timer); resolve(); return; }
+      el.textContent += text[i];
+      i++;
+      if (i >= text.length) {
+        clearInterval(timer);
+        if (cursor) cursor.classList.add('done');
+        resolve();
+      }
+    }, speed);
+  });
+}
+
+function pause(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+/* друкує розшифрований текст у полі повідомлення, замінюючи будь-яку
+   заглушку чи попередній результат. Пауза перед стартом друку приблизно
+   збігається з часом, за який роздільник встигає доїхати назад угору —
+   текст не з'являється раніше, ніж око встигло заплющитись. */
+async function revealMessage(text) {
+  revealToken++;
+  const myToken = revealToken;
+  showingStub = false;
+
+  const el = document.getElementById('msgText');
+  const cursor = document.getElementById('msgCursor');
+  el.textContent = '';
+  cursor.classList.remove('idle', 'done');
+
+  await pause(ACCORDION_TRANSITION_MS);
+  if (myToken !== revealToken) return;
+
+  await typeInto('msgText', 'msgCursor', text, TYPE_SPEED_MS, myToken);
+}
+
+/* ===== ІНІЦІАЛІЗАЦІЯ ===== */
+applyLang();
+setStub();
 </script>
+
 </body>
 </html>
