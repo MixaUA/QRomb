@@ -81,12 +81,6 @@
   }
   .badge.ok { background: #1e5c1e; color: #a4e8a4; }
   .badge.err { background: #5c1e1e; color: #e8a4a4; }
-
-  textarea#logArea {
-    width: 100%; box-sizing: border-box; background: #0b3d63; color: #aacbe8;
-    font-family: monospace; font-size: 11px; line-height: 1.4;
-    border: 1px solid #ffffff33; border-radius: 6px; padding: 8px; resize: vertical;
-  }
 </style>
 </head>
 <body>
@@ -127,14 +121,6 @@
     <div class="result" id="decResult"></div>
     <button onclick="startCam()">Запустити камеру</button>
     <button class="secondary" onclick="stopCam()">Зупинити</button>
-    <button class="secondary" onclick="rescanDecode()" id="rescanBtn" style="display:none;">Сканувати ще</button>
-  </div>
-
-  <div class="card" style="margin-top:14px;">
-    <label style="margin-top:0;">Лог (для дебагу — скинь мені весь текст, коли щось піде не так)</label>
-    <textarea id="logArea" readonly rows="10"></textarea>
-    <button onclick="copyLog()">Копіювати</button>
-    <button class="secondary" onclick="clearLog()">Очистити</button>
   </div>
 </div>
 
@@ -161,13 +147,16 @@ const HUB_R = 16;
    що й призводило до розсинхрону — тепер один прапорець на все. */
 let DISC_THEME = 'dark'; // 'dark' = темний фон/світлі знаки, 'light' = світлий фон/темні знаки
 
-// координати трьох якорів у системі координат диска (0..480) — єдине джерело
-// правди для їхніх позицій; використовується і при малюванні, і при афінному
-// підгоні геометрії в декодері, щоб контур не міг розійтися з реальністю
-const ANCHOR_ANGLES = [90, 210, 330].map(d => d * Math.PI / 180);
+// координати ЧОТИРЬОХ якорів у системі координат диска (0..480) — єдине
+// джерело правди для їхніх позицій. Четвертий якір (верх, 270°) додано,
+// щоб мати 4 відповідності точок і рахувати повну гомографію (проєктивну
+// корекцію нахилу), а не афінне наближення на 3 точках — так само, як QR
+// використовує кілька опорних точок для компенсації перспективи.
+const ANCHOR_ANGLES = [90, 270, 210, 330].map(d => d * Math.PI / 180); // низ, верх, ліво, право
 const SRC_BOTTOM = { x: CX + Math.cos(ANCHOR_ANGLES[0]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[0]) * ANCHOR_R };
-const SRC_LEFT   = { x: CX + Math.cos(ANCHOR_ANGLES[1]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[1]) * ANCHOR_R };
-const SRC_RIGHT  = { x: CX + Math.cos(ANCHOR_ANGLES[2]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[2]) * ANCHOR_R };
+const SRC_TOP    = { x: CX + Math.cos(ANCHOR_ANGLES[1]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[1]) * ANCHOR_R };
+const SRC_LEFT   = { x: CX + Math.cos(ANCHOR_ANGLES[2]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[2]) * ANCHOR_R };
+const SRC_RIGHT  = { x: CX + Math.cos(ANCHOR_ANGLES[3]) * ANCHOR_R, y: CY + Math.sin(ANCHOR_ANGLES[3]) * ANCHOR_R };
 
 /* ===================== КОДУВАННЯ ТЕКСТУ В БІТИ ===================== */
 function encodeTextToRings(text) {
@@ -202,7 +191,7 @@ function indicesToRingBits(indices) {
 /* ===================== МАЛЮВАННЯ ===================== */
 function drawAnchors(ctx, fg) {
   ctx.fillStyle = fg;
-  for (const p of [SRC_BOTTOM, SRC_LEFT, SRC_RIGHT]) {
+  for (const p of [SRC_BOTTOM, SRC_TOP, SRC_LEFT, SRC_RIGHT]) {
     ctx.beginPath();
     ctx.arc(p.x, p.y, ANCHOR_SIZE, 0, Math.PI * 2);
     ctx.fill();
@@ -367,44 +356,56 @@ const NOISE_MISMATCH_THRESHOLD = 15;
 
 let scanHistory = [];
 let locking = false;
-let scanFinished = false; // true після успішної фіксації — сканування зупинено, чекає "Сканувати ще"
 let camStream = null, scanTimer = null;
+let lockHoldTimeoutId = null; // щоб можна було скасувати заплановане finishScan при ручній зупинці
 
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
 
 /* ================================================================
-   АФІННЕ ПЕРЕТВОРЕННЯ З 3 ВІДПОВІДНОСТЕЙ ТОЧОК.
-   Раніше геометрія диска описувалась одним поворотом + одним
-   рівномірним масштабом — модель "диск просто повернули", без
-   нахилу. Афінне перетворення (поворот + нерівномірний масштаб по
-   осях + зсув-перекіс) точніше описує, що відбувається з трикутником
-   якорів при нахилі диска до камери. Це ще не повна перспектива —
-   для неї потрібні 4 точки й гомографія, — але суттєво ближче до
-   реальності, ніж чиста подібність (поворот+один масштаб).
+   ГОМОГРАФІЯ З 4 ВІДПОВІДНОСТЕЙ ТОЧОК (DLT — Direct Linear Transform).
+   Афінне перетворення (3 точки, 6 ступенів свободи) моделює поворот +
+   нерівномірний масштаб + перекіс, але НЕ моделює справжню перспективу
+   (те, як паралельні лінії "сходяться" при нахилі площини до камери).
+   4 точки дають повні 8 ступенів свободи проєктивного перетворення —
+   так само, як QR-коди рахують перспективу за опорними точками.
+   Розв'язується як система 8 лінійних рівнянь (h33 зафіксовано = 1)
+   методом Гаусса з частковим вибором провідного елемента.
    ================================================================ */
-function det3(m) {
-  return m[0][0] * (m[1][1]*m[2][2] - m[1][2]*m[2][1])
-       - m[0][1] * (m[1][0]*m[2][2] - m[1][2]*m[2][0])
-       + m[0][2] * (m[1][0]*m[2][1] - m[1][1]*m[2][0]);
-}
-
-function solveAffine(src, dst) {
-  // M * [a,b,e]^T = [X0,X1,X2]^T  та  M * [c,d,f]^T = [Y0,Y1,Y2]^T
-  const M = src.map(p => [p.x, p.y, 1]);
-  const detM = det3(M);
-  function solveCol(rhs) {
-    function replaceCol(col) {
-      return M.map((row, i) => row.map((v, j) => j === col ? rhs[i] : v));
+function solveLinearSystem(A, b) {
+  const n = b.length;
+  const M = A.map(row => row.slice());
+  const B = b.slice();
+  for (let col = 0; col < n; col++) {
+    let maxRow = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[maxRow][col])) maxRow = r;
+    [M[col], M[maxRow]] = [M[maxRow], M[col]];
+    [B[col], B[maxRow]] = [B[maxRow], B[col]];
+    const pivot = M[col][col];
+    for (let r = 0; r < n; r++) {
+      if (r === col || pivot === 0) continue;
+      const factor = M[r][col] / pivot;
+      for (let c = col; c < n; c++) M[r][c] -= factor * M[col][c];
+      B[r] -= factor * B[col];
     }
-    return [0, 1, 2].map(col => det3(replaceCol(col)) / detM);
   }
-  const [a, b, e] = solveCol(dst.map(p => p.x));
-  const [c, d, f] = solveCol(dst.map(p => p.y));
-  return { a, b, c, d, e, f };
+  return M.map((row, i) => row[i] !== 0 ? B[i] / row[i] : 0);
 }
 
-function applyAffine(t, x, y) {
-  return { x: t.a * x + t.b * y + t.e, y: t.c * x + t.d * y + t.f };
+function solveHomography(src, dst) {
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const { x, y } = src[i];
+    const { x: xp, y: yp } = dst[i];
+    A.push([x, y, 1, 0, 0, 0, -x * xp, -y * xp]); b.push(xp);
+    A.push([0, 0, 0, x, y, 1, -x * yp, -y * yp]); b.push(yp);
+  }
+  const h = solveLinearSystem(A, b);
+  return { h11: h[0], h12: h[1], h13: h[2], h21: h[3], h22: h[4], h23: h[5], h31: h[6], h32: h[7] };
+}
+
+function applyHomography(H, x, y) {
+  const w = H.h31 * x + H.h32 * y + 1;
+  return { x: (H.h11 * x + H.h12 * y + H.h13) / w, y: (H.h21 * x + H.h22 * y + H.h23) / w };
 }
 
 function maxAngleDeviation(a, b, c) {
@@ -433,8 +434,11 @@ function drawFocusTriangle(displayCtx, W, H) {
   displayCtx.stroke();
   displayCtx.setLineDash([]);
 
+  // нормалізуємо прогрес під фактичну кількість вершин (4, а не завжди 3) —
+  // інакше остання вершина ніколи не досягла б повної яскравості
+  const normalizedProgress = (ringProgress / CONFIRM_STREAK) * vertices.length;
   vertices.forEach((p, i) => {
-    const alpha = Math.max(0, Math.min(1, ringProgress - i));
+    const alpha = Math.max(0, Math.min(1, normalizedProgress - i));
     if (alpha <= 0.01) return;
     displayCtx.fillStyle = `rgba(255, 209, 121, ${alpha})`;
     displayCtx.beginPath();
@@ -468,9 +472,6 @@ async function startCam() {
     targetRingProgress = 0;
     ringProgress = 0;
     locking = false;
-    scanFinished = false;
-    document.getElementById('rescanBtn').style.display = 'none';
-    logEvent(`сесія: старт, тема=${DISC_THEME}`);
     setStatus('Пошук якорів...', '');
     document.getElementById('decResult').innerHTML = '';
     scanTimer = setInterval(scanFrame, 220);
@@ -481,22 +482,41 @@ async function startCam() {
   }
 }
 
-function stopCam() {
+/* Єдина точка зупинки камери й очищення стану — використовується і при
+   ручному натисканні "Зупинити", і при автоматичному завершенні після
+   CONFIRM_STREAK підтверджень (finishScan). Раніше кожен шлях чистив
+   стан по-своєму — тепер один спільний шлях, щоб нічого не забути.
+
+   Явний video.srcObject = null і video.pause() — без цього сам
+   MediaStream і його відеодоріжка (та пам'ять під неї) можуть не
+   звільнитись одразу після stop(), навіть коли track.stop() вже
+   викликано: <video> все ще тримає посилання на потік через srcObject. */
+function teardownCamera() {
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
   if (overlayAnimFrame) { cancelAnimationFrame(overlayAnimFrame); overlayAnimFrame = null; }
-  scanHistory = [];
+  if (lockHoldTimeoutId) { clearTimeout(lockHoldTimeoutId); lockHoldTimeoutId = null; }
+
+  const video = document.getElementById('camVideo');
+  video.pause();
+  video.srcObject = null;
+
   resetTracking();
   lastTriangle = null;
   targetRingProgress = 0;
   ringProgress = 0;
   locking = false;
-  scanFinished = false;
-  document.getElementById('rescanBtn').style.display = 'none';
-  setStatus('Радар вимкнено', '');
+  scanHistory = [];
+
   const dc = document.getElementById('decCanvas');
   dc.getContext('2d').clearRect(0, 0, dc.width, dc.height);
-  document.getElementById('sampleCanvas').getContext('2d').clearRect(0, 0, ANALYSIS_SIZE, ANALYSIS_SIZE);
+  const sc = document.getElementById('sampleCanvas');
+  sc.getContext('2d').clearRect(0, 0, sc.width, sc.height);
+}
+
+function stopCam() {
+  teardownCamera();
+  setStatus('Радар вимкнено', '');
 }
 
 function onThemeToggle() {
@@ -516,66 +536,6 @@ function setStatus(text, cls) {
   const st = document.getElementById('decStatus');
   st.textContent = text;
   st.className = 'status' + (cls ? ' ' + cls : '');
-  logStatusChange(text);
-}
-
-/* ================================================================
-   ЛОГ ДЛЯ ДЕБАГУ. Основне джерело — зміни статусу (через setStatus,
-   з дедуплікацією однакових повторів) + окремі детальні події
-   (кожне зчитування кілець з текстом і розбіжностями, фіксація,
-   шум) там, де сам статус не показує достатньо деталей.
-   ================================================================ */
-const MAX_LOG_LINES = 600;
-let logLines = [];
-let lastLoggedStatus = null;
-
-function logTimestamp() {
-  const d = new Date();
-  return d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
-}
-
-function logEvent(msg) {
-  logLines.push(`[${logTimestamp()}] ${msg}`);
-  if (logLines.length > MAX_LOG_LINES) logLines.shift();
-  renderLog();
-}
-
-function logStatusChange(text) {
-  if (text === lastLoggedStatus) return; // не дублюємо однаковий статус щокадру
-  lastLoggedStatus = text;
-  logEvent('статус: ' + text);
-}
-
-function renderLog() {
-  const area = document.getElementById('logArea');
-  if (!area) return;
-  area.value = logLines.join('\n');
-  area.scrollTop = area.scrollHeight;
-}
-
-async function copyLog() {
-  const text = logLines.join('\n');
-  try {
-    await navigator.clipboard.writeText(text);
-    setStatus('Лог скопійовано', 'ok');
-  } catch (e) {
-    // фолбек для середовищ без Clipboard API
-    const area = document.getElementById('logArea');
-    area.focus();
-    area.select();
-    try {
-      document.execCommand('copy');
-      setStatus('Лог скопійовано', 'ok');
-    } catch (e2) {
-      setStatus('Не вдалось скопіювати: ' + e2.message, 'err');
-    }
-  }
-}
-
-function clearLog() {
-  logLines = [];
-  lastLoggedStatus = null;
-  renderLog();
 }
 
 function scanFrame() {
@@ -595,7 +555,7 @@ function scanFrame() {
 }
 
 function tryDecode() {
-  if (locking || scanFinished) return; // фіксація триває або вже завершена — кадри ігноруємо
+  if (locking) return; // триває пауза-утримання перед фіксацією — кадри ігноруємо
 
   const sc = document.getElementById('sampleCanvas');
   const overlayCtx = sc.getContext('2d');
@@ -612,8 +572,10 @@ function tryDecode() {
     return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
   }
 
-  // --- поріг Оцу: сам обчислюється з гістограми яскравості кадру, без
-  //     магічних констант під конкретне освітлення чи тему ---
+  // --- поріг Оцу: один на кадр, сам обчислюється з гістограми яскравості,
+  //     без магічних констант під конкретне освітлення чи тему. Локальний
+  //     варіант (по клітинках) пробувався і виявився надто чутливим до
+  //     текстури фону/шуму камери — ловив зайві плями поза диском. ---
   const hist = new Uint32Array(256);
   let sampleCount = 0;
   for (let i = 0; i < data.length; i += 32) {
@@ -656,7 +618,6 @@ function tryDecode() {
         floodQueueX[0] = x; floodQueueY[0] = y;
         let qHead = 0, qTail = 1;
         let sx = 0, sy = 0, cnt = 0;
-        // bounding box плями — потрібен для перевірки "круглості" нижче
         let minPX = Infinity, maxPX = -Infinity, minPY = Infinity, maxPY = -Infinity;
         while (qHead < qTail && cnt < 1200) {
           const px = floodQueueX[qHead], py = floodQueueY[qHead];
@@ -676,16 +637,10 @@ function tryDecode() {
           }
         }
         if (cnt > 6 && cnt < 1200) {
-          // +4 бо крок floodfill-семплінгу = 4px, тож реальна пляма трохи
-          // ширша за розкид виявлених точок
           const bboxW = maxPX - minPX + 4;
           const bboxH = maxPY - minPY + 4;
-          const fillRatio = (cnt * 16) / (bboxW * bboxH); // *16 — кожна точка ~ клітинка 4×4px
+          const fillRatio = (cnt * 16) / (bboxW * bboxH);
           const aspect = Math.max(bboxW, bboxH) / Math.min(bboxW, bboxH);
-          // якір — кругла крапка: заповнює свій bbox щільно (~0.78 для кола)
-          // і bbox майже квадратний. Сегмент кільця — дуга: витягнута
-          // і/або рідко заповнює прямокутник навколо себе. Це відсіює
-          // "чіпляння" за внутрішні частини диска ще на етапі пошуку плям.
           if (fillRatio >= 0.5 && aspect <= 1.7) {
             markBlobs.push({ x: sx / cnt, y: sy / cnt, size: cnt });
           }
@@ -695,74 +650,129 @@ function tryDecode() {
   }
 
   markBlobs.sort((a, b) => b.size - a.size);
-  if (markBlobs.length < 3) {
+  if (markBlobs.length < 4) {
     handleTrackingMiss();
     lastTriangle = null;
     setStatus('Пошук якорів...', '');
     return;
   }
 
-  // --- КРОК 2: пошук трійки з фільтрами розміру/форми/орієнтації ---
+  /* ================================================================
+     КРОК 2: пошук ЧОТИРИКУТНИКА (кайт/ромб) серед кандидатів замість
+     трикутника. 4 якорі диска (низ 90°, верх 270°, ліво 210°, право
+     330°) утворюють фігуру із двома парами рівних суміжних сторін:
+     низ-ліво ≈ низ-право ≈ ліво-право (довга сторона), верх-ліво ≈
+     верх-право (коротка сторона), і діагональ низ-верх — найдовший і
+     найнадійніший орієнтир (діаметр кола, на якому лежать якорі).
+     Використовуємо цю діагональ як опору для масштабу, решту довжин
+     перевіряємо відносно неї з відносним допуском (не жорстким
+     score<0.22, як для трикутника — під нахилом/перспективою
+     пропорції можуть змінюватись сильніше, ніж просто поворот).
+     ================================================================ */
+  const EXP_DIAG = 2 * ANCHOR_R;           // низ-верх (діаметр)
+  const EXP_LONG_SIDE = ANCHOR_R * Math.sqrt(3); // низ-ліво, низ-право, ліво-право
+  const EXP_SHORT_SIDE = ANCHOR_R;               // верх-ліво, верх-право
+  const QUAD_SHAPE_TOLERANCE = 0.35;
+
   const candidates = markBlobs.slice(0, Math.min(12, markBlobs.length));
-  let bestTriangle = null, bestScore = Infinity;
+  let bestQuad = null, bestScore = Infinity;
   let sawOversized = false;
 
-  for (let a = 0; a < candidates.length; a++) {
-    for (let b = a + 1; b < candidates.length; b++) {
-      for (let c = b + 1; c < candidates.length; c++) {
-        const pa = candidates[a], pb = candidates[b], pc = candidates[c];
-        const d1 = dist(pa, pb), d2 = dist(pb, pc), d3 = dist(pa, pc);
-        const avg = (d1 + d2 + d3) / 3;
-        if (avg > MAX_TRIANGLE_SIDE_PX) { sawOversized = true; continue; }
-        if (avg < MIN_TRIANGLE_SIDE_PX) continue;
-        const score = (Math.abs(d1-avg) + Math.abs(d2-avg) + Math.abs(d3-avg)) / avg;
-        if (score >= 0.22) continue;
-        if (maxAngleDeviation(d1, d2, d3) > MAX_ANGLE_DEVIATION_DEG) continue;
+  for (let i0 = 0; i0 < candidates.length; i0++) {
+    for (let i1 = i0 + 1; i1 < candidates.length; i1++) {
+      for (let i2 = i1 + 1; i2 < candidates.length; i2++) {
+        for (let i3 = i2 + 1; i3 < candidates.length; i3++) {
+          const pts = [candidates[i0], candidates[i1], candidates[i2], candidates[i3]];
 
-        // фільтр орієнтації: відкидаємо кандидата з неможливим поворотом
-        // ще до порівняння скору
-        const candCx = (pa.x + pb.x + pc.x) / 3;
-        const candCy = (pa.y + pb.y + pc.y) / 3;
-        const candBottom = [pa, pb, pc].reduce((best, p) => p.y > best.y ? p : best);
-        const candRotation = Math.atan2(candBottom.y - candCy, candBottom.x - candCx);
-        const deviation = Math.abs(angleDiffRad(candRotation, EXPECTED_ROTATION_RAD));
-        if (deviation > MAX_ROTATION_DEVIATION_RAD) continue;
+          let bottom = pts[0], top = pts[0];
+          for (const p of pts) {
+            if (p.y > bottom.y) bottom = p;
+            if (p.y < top.y) top = p;
+          }
+          if (bottom === top) continue;
+          const rest = pts.filter(p => p !== bottom && p !== top);
+          if (rest.length !== 2) continue; // дублікат за координатами — пропускаємо
+          const left = rest[0].x <= rest[1].x ? rest[0] : rest[1];
+          const right = rest[0].x <= rest[1].x ? rest[1] : rest[0];
 
-        if (score < bestScore) { bestScore = score; bestTriangle = [pa, pb, pc]; }
+          const dDiag = dist(bottom, top);
+          if (dDiag > MAX_TRIANGLE_SIDE_PX * 1.3) { sawOversized = true; continue; }
+          if (dDiag < MIN_TRIANGLE_SIDE_PX * 1.3) continue;
+
+          const scale = dDiag / EXP_DIAG;
+          function relErr(measured, expected) {
+            const e = expected * scale;
+            return Math.abs(measured - e) / e;
+          }
+          const errs = [
+            relErr(dist(bottom, left), EXP_LONG_SIDE),
+            relErr(dist(bottom, right), EXP_LONG_SIDE),
+            relErr(dist(left, right), EXP_LONG_SIDE),
+            relErr(dist(top, left), EXP_SHORT_SIDE),
+            relErr(dist(top, right), EXP_SHORT_SIDE),
+          ];
+          const maxErr = Math.max(...errs);
+          if (maxErr > QUAD_SHAPE_TOLERANCE) continue;
+
+          const cx4 = (bottom.x + top.x + left.x + right.x) / 4;
+          const cy4 = (bottom.y + top.y + left.y + right.y) / 4;
+          const candRotation = Math.atan2(bottom.y - cy4, bottom.x - cx4);
+          const deviation = Math.abs(angleDiffRad(candRotation, EXPECTED_ROTATION_RAD));
+          if (deviation > MAX_ROTATION_DEVIATION_RAD) continue;
+
+          const score = errs.reduce((a, b) => a + b, 0);
+          if (score < bestScore) { bestScore = score; bestQuad = { bottom, top, left, right }; }
+        }
       }
     }
   }
 
-  if (!bestTriangle) {
+  if (!bestQuad) {
     handleTrackingMiss();
     lastTriangle = null;
     setStatus(sawOversized ? 'Занадто близько — трохи відсунь' : 'Стабілізація геометрії...', '');
     return;
   }
 
-  const [pa, pb, pc] = bestTriangle;
-  const cx = (pa.x + pb.x + pc.x) / 3, cy = (pa.y + pb.y + pc.y) / 3;
+  const { bottom: bottomAnchor, top: topAnchor, left: leftAnchor, right: rightAnchor } = bestQuad;
+  const cx = (bottomAnchor.x + topAnchor.x + leftAnchor.x + rightAnchor.x) / 4;
+  const cy = (bottomAnchor.y + topAnchor.y + leftAnchor.y + rightAnchor.y) / 4;
   handleTrackingHit(cx, cy);
 
-  const bottomAnchor = [pa, pb, pc].reduce((best, p) => p.y > best.y ? p : best);
-  const otherAnchors = [pa, pb, pc].filter(p => p !== bottomAnchor);
-  // визначаємо, хто з двох верхніх — лівий/правий (менший/більший x),
-  // щоб зіставити з правильними SRC_LEFT/SRC_RIGHT у системі координат диска
-  const leftAnchor  = otherAnchors[0].x <= otherAnchors[1].x ? otherAnchors[0] : otherAnchors[1];
-  const rightAnchor = otherAnchors[0].x <= otherAnchors[1].x ? otherAnchors[1] : otherAnchors[0];
-  lastTriangle = [bottomAnchor, leftAnchor, rightAnchor]; // низ завжди першим
+  // порядок обходу периметра кайта без самоперетину: низ → право → верх → ліво
+  lastTriangle = [bottomAnchor, rightAnchor, topAnchor, leftAnchor];
 
-  // афінне перетворення "система координат диска (0..480) -> екран", підігнане
-  // під 3 реально знайдені якорі — замінює попередню модель поворот+масштаб
-  const transform = solveAffine(
-    [SRC_BOTTOM, SRC_LEFT, SRC_RIGHT],
-    [bottomAnchor, leftAnchor, rightAnchor]
+  // гомографія "система координат диска (0..480) -> екран" на основі 4
+  // реально знайдених якорів — повна проєктивна корекція, а не афінне
+  // наближення на 3 точках
+  const transform = solveHomography(
+    [SRC_BOTTOM, SRC_TOP, SRC_LEFT, SRC_RIGHT],
+    [bottomAnchor, topAnchor, leftAnchor, rightAnchor]
   );
+
+  /* Незалежна перевірка геометрії: центральна втулка. З 4-точковою
+     гомографією ця перевірка вже змістовніша, ніж була з афінним
+     наближенням (де похибка на периферії "гасилась" ближче до центру
+     трикутника) — проєктивні члени гомографії (h31,h32) можуть помітно
+     зсунути прогнозований центр, якщо підгонка невдала. */
+  const predictedHub = applyHomography(transform, CX, CY);
+  const hubScaleEstimate = dist(bottomAnchor, topAnchor) / (2 * ANCHOR_R);
+  const HUB_CHECK_TOLERANCE_PX = Math.max(12, hubScaleEstimate * HUB_R * 1.3);
+  let hubOk = false;
+  for (const b of markBlobs) {
+    if (dist(b, predictedHub) < HUB_CHECK_TOLERANCE_PX) { hubOk = true; break; }
+  }
+  if (!hubOk) {
+    handleTrackingMiss();
+    scanHistory = [];
+    targetRingProgress = 0;
+    setStatus('Геометрія не підтверджена (втулка), шукаю...', '');
+    return;
+  }
 
   // --- КРОК 3: зчитування 10 кілець (6 унікальних + 6 дзеркальних) ---
   const indices = [];
   let totalMismatches = 0;
-  let invalidRings = 0; // row/col ≥6 — математично неможливо для справжнього символу, стовідсоткова ознака браку
 
   for (let ring = 0; ring < RINGS; ring++) {
     const ringMidR = INNER_R + (ring + 0.5) * RING_GAP; // радіус у системі координат ДИСКА (0..480), без масштабу
@@ -771,7 +781,7 @@ function tryDecode() {
       const midAngle = START_ANGLE + ((sector + 0.5) / SECTORS) * Math.PI * 2; // те саме START_ANGLE, що й у drawDisc
       const diagramX = CX + Math.cos(midAngle) * ringMidR;
       const diagramY = CY + Math.sin(midAngle) * ringMidR;
-      const { x: px, y: py } = applyAffine(transform, diagramX, diagramY);
+      const { x: px, y: py } = applyHomography(transform, diagramX, diagramY);
       const l = lum(px, py);
       const bit = isMark(l) ? 1 : 0;
       overlayCtx.fillStyle = bit ? 'rgba(255,80,80,0.85)' : 'rgba(120,255,140,0.7)';
@@ -795,9 +805,6 @@ function tryDecode() {
 
     const row = (bits[0] << 2) | (bits[1] << 1) | bits[2];
     const col = (bits[3] << 2) | (bits[4] << 1) | bits[5];
-    // алфавіт використовує лише row/col у діапазоні 0..5 (6×6 = 36 позицій);
-    // 6 чи 7 виникає лише через перевернутий старший біт і завжди означає брак
-    if (row > 5 || col > 5) invalidRings++;
     indices.push(row * 6 + col);
   }
 
@@ -807,28 +814,29 @@ function tryDecode() {
     text += indexToChar(idx);
   }
 
-  registerReading(text, totalMismatches, invalidRings);
+  registerReading(text, totalMismatches);
 }
 
 /* накопичення підтверджень + lock-hold пауза перед фіксацією,
    за тим самим принципом, що в registerReading робочого сканера */
-function registerReading(text, mismatches, invalidRings) {
+function registerReading(text, mismatches) {
   if (locking) return;
 
-  if (mismatches > NOISE_MISMATCH_THRESHOLD || invalidRings > 0) {
-    logEvent(`read: ШУМ mismatches=${mismatches} invalid=${invalidRings} (поріг ${NOISE_MISMATCH_THRESHOLD})`);
+  if (mismatches > NOISE_MISMATCH_THRESHOLD) {
     scanHistory = [];
     targetRingProgress = 0;
     setStatus('Сирий шум, шукаю патерн...', '');
     return;
   }
 
-  const reading = text + '|' + mismatches;
-  logEvent(`read: "${text || '(порожньо)'}" mismatches=${mismatches}`);
-  if (scanHistory.length && scanHistory[scanHistory.length - 1] === reading) {
-    scanHistory.push(reading);
+  // Порівнюємо серію лише за текстом. Якщо додати сюди ще й mismatches,
+  // лічильник збігів практично ніколи не накопичиться: кількість
+  // розбіжностей дзеркала — шумна величина, що стрибає кадр до кадру
+  // (0, 1, 0, 2...) навіть коли розпізнаний текст уже стабільний.
+  if (scanHistory.length && scanHistory[scanHistory.length - 1] === text) {
+    scanHistory.push(text);
   } else {
-    scanHistory = [reading];
+    scanHistory = [text];
   }
 
   targetRingProgress = Math.min(scanHistory.length, CONFIRM_STREAK);
@@ -843,32 +851,16 @@ function registerReading(text, mismatches, invalidRings) {
 
   if (scanHistory.length >= CONFIRM_STREAK && !locking) {
     locking = true;
-    setTimeout(() => finishScan(text, mismatches), LOCK_HOLD_MS);
+    lockHoldTimeoutId = setTimeout(() => finishScan(text, mismatches), LOCK_HOLD_MS);
   }
 }
 
+/* Диск підтверджено CONFIRM_STREAK разів поспіль — камера повністю
+   зупиняється (через teardownCamera), результат лишається на екрані.
+   Наступне сканування вимагає нового натискання "Запустити камеру". */
 function finishScan(text, mismatches) {
-  logEvent(`LOCK: "${text}" mismatches=${mismatches}`);
-  setStatus('Зафіксовано: ' + (mismatches === 0 ? 'без розбіжностей' : `${mismatches} розбіжностей`), mismatches === 0 ? 'ok' : 'warn');
-  locking = false;
-  scanFinished = true;
-  scanHistory = [];
-  if (scanTimer) { clearInterval(scanTimer); scanTimer = null; } // зупиняємо перебір повністю — камера лишається увімкненою
-  document.getElementById('rescanBtn').style.display = 'inline-block';
-}
-
-function rescanDecode() {
-  scanFinished = false;
-  scanHistory = [];
-  resetTracking();
-  lastTriangle = null;
-  targetRingProgress = 0;
-  ringProgress = 0;
-  locking = false;
-  document.getElementById('decResult').innerHTML = '';
-  document.getElementById('rescanBtn').style.display = 'none';
-  setStatus('Пошук якорів...', '');
-  if (!scanTimer && camStream) scanTimer = setInterval(scanFrame, 220);
+  teardownCamera();
+  setStatus('Завершено ✓ — натисни «Запустити камеру» для нового диска', mismatches === 0 ? 'ok' : 'warn');
 }
 
 /* ===================== ВКЛАДКИ ===================== */
