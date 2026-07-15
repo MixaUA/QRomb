@@ -121,6 +121,7 @@
     <div class="result" id="decResult"></div>
     <button onclick="startCam()">Запустити камеру</button>
     <button class="secondary" onclick="stopCam()">Зупинити</button>
+    <button class="secondary" onclick="rescanDecode()" id="rescanBtn" style="display:none;">Сканувати ще</button>
   </div>
 </div>
 
@@ -353,6 +354,7 @@ const NOISE_MISMATCH_THRESHOLD = 15;
 
 let scanHistory = [];
 let locking = false;
+let scanFinished = false; // true після успішної фіксації — сканування зупинено, чекає "Сканувати ще"
 let camStream = null, scanTimer = null;
 
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
@@ -453,6 +455,8 @@ async function startCam() {
     targetRingProgress = 0;
     ringProgress = 0;
     locking = false;
+    scanFinished = false;
+    document.getElementById('rescanBtn').style.display = 'none';
     setStatus('Пошук якорів...', '');
     document.getElementById('decResult').innerHTML = '';
     scanTimer = setInterval(scanFrame, 220);
@@ -473,6 +477,8 @@ function stopCam() {
   targetRingProgress = 0;
   ringProgress = 0;
   locking = false;
+  scanFinished = false;
+  document.getElementById('rescanBtn').style.display = 'none';
   setStatus('Радар вимкнено', '');
   const dc = document.getElementById('decCanvas');
   dc.getContext('2d').clearRect(0, 0, dc.width, dc.height);
@@ -515,7 +521,7 @@ function scanFrame() {
 }
 
 function tryDecode() {
-  if (locking) return; // триває пауза-утримання перед фіксацією — кадри ігноруємо
+  if (locking || scanFinished) return; // фіксація триває або вже завершена — кадри ігноруємо
 
   const sc = document.getElementById('sampleCanvas');
   const overlayCtx = sc.getContext('2d');
@@ -762,9 +768,26 @@ function registerReading(text, mismatches) {
 }
 
 function finishScan(text, mismatches) {
-  setStatus('Зафіксовано', mismatches === 0 ? 'ok' : 'warn');
-  locking = false; // дозволяємо продовжити сканування наступного диска без перезапуску камери
+  setStatus('Зафіксовано: ' + (mismatches === 0 ? 'без розбіжностей' : `${mismatches} розбіжностей`), mismatches === 0 ? 'ok' : 'warn');
+  locking = false;
+  scanFinished = true;
   scanHistory = [];
+  if (scanTimer) { clearInterval(scanTimer); scanTimer = null; } // зупиняємо перебір повністю — камера лишається увімкненою
+  document.getElementById('rescanBtn').style.display = 'inline-block';
+}
+
+function rescanDecode() {
+  scanFinished = false;
+  scanHistory = [];
+  resetTracking();
+  lastTriangle = null;
+  targetRingProgress = 0;
+  ringProgress = 0;
+  locking = false;
+  document.getElementById('decResult').innerHTML = '';
+  document.getElementById('rescanBtn').style.display = 'none';
+  setStatus('Пошук якорів...', '');
+  if (!scanTimer && camStream) scanTimer = setInterval(scanFrame, 220);
 }
 
 /* ===================== ВКЛАДКИ ===================== */
