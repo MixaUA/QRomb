@@ -106,8 +106,11 @@
 <div class="theme-toggle" style="text-align:center; margin-bottom:16px; font-size:13px; color:#aacbe8;">
   <label style="cursor:pointer;">
     <input type="checkbox" id="themeToggle" onchange="onThemeToggle()">
-    Світла тема диска (друк на білому) — керує і кодером, і декодером
+    Світла тема диска (друк на білому)
   </label>
+  <span id="colorPickerWrap" style="display:none; margin-left: 10px;">
+    Колір символів: <input type="color" id="fgColorPicker" value="#16222c" onchange="onTextInput()" style="vertical-align: middle; cursor:pointer;">
+  </span>
 </div>
 
 <div class="tabs">
@@ -253,7 +256,7 @@ function drawHub(ctx, fg) {
 function drawDisc(canvas, fullBits) {
   const ctx = canvas.getContext('2d');
   const bg = DISC_THEME === 'dark' ? '#0b3d63' : '#f4f1ea';
-  const fg = DISC_THEME === 'dark' ? '#ffffff' : '#16222c';
+  const fg = DISC_THEME === 'dark' ? '#ffffff' : document.getElementById('fgColorPicker').value;
 
   ctx.clearRect(0, 0, 480, 480);
   ctx.fillStyle = bg;
@@ -570,6 +573,7 @@ function stopCam() {
 
 function onThemeToggle() {
   DISC_THEME = document.getElementById('themeToggle').checked ? 'light' : 'dark';
+  document.getElementById('colorPickerWrap').style.display = DISC_THEME === 'light' ? 'inline-block' : 'none';
   onTextInput(); // перемалювати диск кодера новою темою
   scanHistory = [];
   resetTracking();
