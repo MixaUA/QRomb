@@ -358,7 +358,7 @@ function angleDiffRad(a, b) {
    ТРЕКІНГ КАДРУ (перенесено, вимкнено за замовчуванням — той самий
    перемикач і той самий фолбек на повний пошук, що й у робочому сканері)
    ================================================================ */
-const TRACKING_ENABLED = false;
+const TRACKING_ENABLED = true;
 const TRACKING_SEARCH_RADIUS = 70;
 const TRACKING_LOST_AFTER = 5;
 let trackedCenter = null;
@@ -845,6 +845,15 @@ function tryDecode() {
   const { bottom: bottomAnchor, top: topAnchor, left: leftAnchor, right: rightAnchor } = bestQuad;
   const cx = (bottomAnchor.x + topAnchor.x + leftAnchor.x + rightAnchor.x) / 4;
   const cy = (bottomAnchor.y + topAnchor.y + leftAnchor.y + rightAnchor.y) / 4;
+
+  const dataRadius = OUTER_R * (dist(bottomAnchor, topAnchor) / (2 * ANCHOR_R));
+  if (cx - dataRadius < 0 || cx + dataRadius >= W || cy - dataRadius < 0 || cy + dataRadius >= H) {
+    handleTrackingMiss();
+    lastTriangle = null;
+    setStatus('Диск частково за кадром', '');
+    return;
+  }
+
   handleTrackingHit(cx, cy);
 
   // порядок обходу периметра кайта без самоперетину: низ → право → верх → ліво
