@@ -555,6 +555,68 @@ function sampleFromHomography(imgData, W, H, Q, quadMap, transform) {
    "спробуй кілька гіпотез, вір найузгодженішій", що вже використовується
    для quadMap-повороту в 90°, тепер працює і для самої відповідності
    кутів — і використовує ту саму функцію computeAgreement, без дублю. */
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+/* Сортує 4 точки за кутом навколо центроїда і перевіряє, що вони дійсно
+   утворюють ОПУКЛИЙ чотирикутник (жодна точка не всередині трикутника
+   інших трьох) — той самий принцип "форма спершу, дані потім", що вже
+   працює для трикутника в кулачковому диску. Якщо опуклості нема —
+   повертає null: ці 4 точки НЕ можуть бути кутами реального якоря. */
+function cyclicOrderIfConvex(pts) {
+  const ordered = sortByAngleAroundCentroid(pts);
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = ordered[i], b = ordered[(i + 1) % 4], c = ordered[(i + 2) % 4];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    const s = cross > 0 ? 1 : (cross < 0 ? -1 : 0);
+    if (s === 0) return null;
+    if (sign === 0) sign = s;
+    else if (s !== sign) return null;
+  }
+  return ordered;
+}
+
+/* Перевіряє сумірність сторін і правдоподібний розмір — аналог score<0.22
+   для трикутника диска, тільки з допуском під перспективу (справжній
+   квадрат під нахилом камери стає трапецією — сторони НЕ рівні, але й не
+   можуть відрізнятись у рази). MAX_SIDE_RATIO навмисно щедріший, ніж у
+   диска, бо квадрат більший і перспектива на нього діє сильніше. */
+const MAX_SIDE_RATIO = 2.6;
+const MIN_QUAD_DIAG_PX = 50;
+
+function quadShapeOk(ordered, maxDiagPx) {
+  const sides = [dist(ordered[0],ordered[1]), dist(ordered[1],ordered[2]), dist(ordered[2],ordered[3]), dist(ordered[3],ordered[0])];
+  const maxSide = Math.max(...sides), minSide = Math.min(...sides);
+  if (minSide < 8) return false; // вироджений майже-відрізок
+  if (maxSide / minSide > MAX_SIDE_RATIO) return false;
+  const avgDiag = (dist(ordered[0],ordered[2]) + dist(ordered[1],ordered[3])) / 2;
+  if (avgDiag < MIN_QUAD_DIAG_PX || avgDiag > maxDiagPx) return false;
+  return true;
+}
+
+/* Перебирає ВСІ четвірки серед пулу кандидатів (не тільки "топ-4 за
+   розміром") — так само, як диск перебирає всі трійки серед топ-9 плям.
+   Кожна четвірка спершу проходить дешеву геометричну перевірку форми
+   (опуклість + сторони + розмір), і лише ті, що пройшли, йдуть далі на
+   (набагато дорожчу) гомографію + перевірку узгодженості бітів. */
+function findPlausibleQuads(candidates, maxDiagPx) {
+  const n = candidates.length;
+  const quads = [];
+  for (let i0 = 0; i0 < n; i0++)
+    for (let i1 = i0 + 1; i1 < n; i1++)
+      for (let i2 = i1 + 1; i2 < n; i2++)
+        for (let i3 = i2 + 1; i3 < n; i3++) {
+          const pts = [candidates[i0], candidates[i1], candidates[i2], candidates[i3]];
+          const ordered = cyclicOrderIfConvex(pts);
+          if (!ordered) continue;
+          if (!quadShapeOk(ordered, maxDiagPx)) continue;
+          quads.push(ordered);
+        }
+  return quads;
+}
+
+const CANDIDATE_POOL_SIZE = 10; // топ-N плям за розміром, серед яких перебираємо четвірки (як топ-9 у диска для трійок)
+
 function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity, activeCount) {
   const threshold = computeAdaptiveDarkThreshold(imgData);
   const blobs = findDarkBlobs(imgData, W, H, 3, threshold, trackedBounds);
@@ -565,34 +627,38 @@ function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity
   }
 
   blobs.sort((a, b) => b.size - a.size);
-  const top4 = blobs.slice(0, 4);
-  const nextSize = blobs.length > 4 ? blobs[4].size : 0;
-  const sizeGap = nextSize > 0 ? top4[3].size / nextSize : Infinity;
+  const candidates = blobs.slice(0, Math.min(CANDIDATE_POOL_SIZE, blobs.length));
+  const maxDiagPx = Math.min(W, H) * 0.98;
 
-  const ordered = sortByAngleAroundCentroid(top4);
-  const orderedRev = ordered.slice().reverse();
+  const quads = findPlausibleQuads(candidates, maxDiagPx);
+  if (quads.length === 0) {
+    trackingMiss();
+    return { ok: false, reason: `${candidates.length} кандидатів, жоден не схожий на квадрат`, blobCount: blobs.length };
+  }
 
   const corners = getLocalCorners(Q);
   const srcCyclic = [corners.TL, corners.TR, corners.BR, corners.BL];
 
   let best = null;
-  for (const dstBase of [ordered, orderedRev]) {
-    for (let k = 0; k < 4; k++) {
-      const dstCyclic = [dstBase[k % 4], dstBase[(k+1) % 4], dstBase[(k+2) % 4], dstBase[(k+3) % 4]];
-      const transform = solveHomography(srcCyclic, dstCyclic);
-      const sampled = sampleFromHomography(imgData, W, H, Q, quadMap, transform);
-      const agreement = computeAgreement(sampled.results, capacity);
-      if (!best || agreement > best.agreement) best = { transform, agreement, sampled, k, dstCyclic };
+  for (const ordered of quads) {
+    const orderedRev = ordered.slice().reverse();
+    for (const dstBase of [ordered, orderedRev]) {
+      for (let k = 0; k < 4; k++) {
+        const dstCyclic = [dstBase[k % 4], dstBase[(k+1) % 4], dstBase[(k+2) % 4], dstBase[(k+3) % 4]];
+        const transform = solveHomography(srcCyclic, dstCyclic);
+        const sampled = sampleFromHomography(imgData, W, H, Q, quadMap, transform);
+        const agreement = computeAgreement(sampled.results, capacity);
+        if (!best || agreement > best.agreement) best = { transform, agreement, sampled, k, dstCyclic };
+      }
     }
   }
 
-  log(`Якір: плям=${blobs.length}${trackedBounds ? ' [звужена зона]' : ' [повний кадр]'}, топ-4 розміри=[${top4.map(b=>b.size).join(',')}], розрив до 5-ї=${sizeGap===Infinity?'∞':sizeGap.toFixed(1)+'x'}, найкраща узгодженість=${(best.agreement*100).toFixed(1)}%.`);
+  const bestSides = [dist(best.dstCyclic[0],best.dstCyclic[1]), dist(best.dstCyclic[1],best.dstCyclic[2]), dist(best.dstCyclic[2],best.dstCyclic[3]), dist(best.dstCyclic[3],best.dstCyclic[0])];
+  log(`Якір: плям=${blobs.length}${trackedBounds ? ' [звужена зона]' : ' [повний кадр]'}, кандидатів=${candidates.length}, правдоподібних чотирикутників=${quads.length}, сторони обраного=[${bestSides.map(s=>s.toFixed(0)).join(',')}], найкраща узгодженість=${(best.agreement*100).toFixed(1)}%.`);
 
-  // якорі знайдені (навіть якщо узгодженість поки слабка) — звужуємо
-  // зону пошуку навколо них для наступного кадру
-  updateTrackedBounds(top4, W, H);
+  updateTrackedBounds(best.dstCyclic, W, H);
 
-  return { ok: true, blobCount: blobs.length, top4, sizeGap, best, corners };
+  return { ok: true, blobCount: blobs.length, candidateCount: candidates.length, quadCount: quads.length, best, corners };
 }
 
 // =====================================================================
@@ -717,9 +783,17 @@ function drawLiveOverlay(W, H, det, statusText) {
   oc.width = W; oc.height = H;
   const octx = oc.getContext('2d');
   octx.clearRect(0, 0, W, H);
-  if (det && det.top4) {
-    octx.fillStyle = 'rgba(255,200,80,0.85)';
-    for (const b of det.top4) { octx.beginPath(); octx.arc(b.x, b.y, 5, 0, Math.PI*2); octx.fill(); }
+  if (det && det.best && det.best.dstCyclic) {
+    const pts = det.best.dstCyclic;
+    octx.strokeStyle = 'rgba(120,220,120,0.9)';
+    octx.lineWidth = 2;
+    octx.beginPath();
+    octx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < 4; i++) octx.lineTo(pts[i].x, pts[i].y);
+    octx.closePath();
+    octx.stroke();
+    octx.fillStyle = 'rgba(255,200,80,0.9)';
+    for (const p of pts) { octx.beginPath(); octx.arc(p.x, p.y, 5, 0, Math.PI*2); octx.fill(); }
   }
   document.getElementById('scanStatusOverlay').textContent = statusText || '';
 }
