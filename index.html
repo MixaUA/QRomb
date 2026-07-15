@@ -104,6 +104,13 @@
 <div class="sub">10 кілець · дзеркальна перевірка · до 19 символів у одному статичному диску</div>
 
 <div class="theme-toggle" style="text-align:center; margin-bottom:16px; font-size:13px; color:#aacbe8;">
+  <label style="cursor:pointer; margin-right:15px; border-right: 1px solid #4a5c6d; padding-right: 15px;">
+    <input type="radio" name="langToggle" value="UK" checked onchange="onLangToggle()"> 🇺🇦 Укр
+  </label>
+  <label style="cursor:pointer; margin-right:20px;">
+    <input type="radio" name="langToggle" value="EN" onchange="onLangToggle()"> 🇬🇧 Eng
+  </label>
+  
   <label style="cursor:pointer;">
     <input type="checkbox" id="themeToggle" onchange="onThemeToggle()">
     Світла тема диска (друк на білому)
@@ -121,7 +128,7 @@
 <div class="panel active" id="panel-enc">
   <div class="card">
     <canvas id="encCanvas" width="480" height="480"></canvas>
-    <label>Текст (до 19 символів, укр. літери / пробіл / апостроф)</label>
+    <label id="textLabel">Текст (до 19 символів)</label>
     <input type="text" id="textInput" maxlength="19" value="ТЕО КІТ" oninput="onTextInput()">
     <div class="status" id="encStatus"></div>
     <div style="margin-top:10px; display:flex; gap:10px; justify-content:center;">
@@ -154,13 +161,34 @@
 </div>
 
 <script>
-/* ===================== АЛФАВІТ ПОЛІБІЯ ===================== */
-// 33 укр. літери + пробіл + апостроф = 35 символів. Індекс 35 (row5,col5) = службовий маркер "кінець".
-const ALPHABET = "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯ '".split('');
-const END_INDEX = 35;
-const charToIndex = {};
-ALPHABET.forEach((c, i) => charToIndex[c] = i);
-function indexToChar(i) { return ALPHABET[i] ?? '?'; }
+/* ===================== АЛФАВІТ ПОЛІБІЯ 7x7 ===================== */
+// Таблиця 7х7 має 49 комірок (0..48). Індекс 48 = маркер "кінець".
+// Доступно 48 символів для тексту.
+const ALPHABETS = {
+  UK: "АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯ0123456789 '.,@".split(''),
+  EN: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,-?!':\"@/&".split('')
+};
+let CURRENT_LANG = 'UK';
+let CURRENT_ALPHABET = ALPHABETS.UK;
+const END_INDEX = 48;
+let charToIndex = {};
+
+function initAlphabet() {
+  charToIndex = {};
+  CURRENT_ALPHABET.forEach((c, i) => charToIndex[c] = i);
+}
+initAlphabet();
+function indexToChar(i) { return CURRENT_ALPHABET[i] ?? '?'; }
+
+function onLangToggle() {
+  const radios = document.getElementsByName('langToggle');
+  for (let r of radios) {
+    if (r.checked) CURRENT_LANG = r.value;
+  }
+  CURRENT_ALPHABET = ALPHABETS[CURRENT_LANG];
+  initAlphabet();
+  onTextInput(); // перевірити текст і перемалювати
+}
 
 /* ===================== ГЕОМЕТРІЯ ДИСКА ===================== */
 const CX = 240, CY = 240;
@@ -222,7 +250,8 @@ function indicesToRingBits(flatIndices) {
     const ringBits = new Array(numSectors);
     for (let s = 0; s < numSymbols; s++) {
       const idx = flatIndices[pos++];
-      const row = Math.floor(idx / 6), col = idx % 6;
+      // Тепер таблиця 7x7, тому ділимо на 7
+      const row = Math.floor(idx / 7), col = idx % 7;
       const bits6 = [
         (row >> 2) & 1, (row >> 1) & 1, row & 1,
         (col >> 2) & 1, (col >> 1) & 1, col & 1
@@ -296,6 +325,9 @@ function drawDisc(canvas, fullBits, transparentMode = false) {
 function onTextInput() {
   const raw = document.getElementById('textInput').value.toUpperCase();
   document.getElementById('textInput').value = raw;
+  
+  const label = document.getElementById('textLabel');
+  label.textContent = `Текст (до 19 символів, ${CURRENT_LANG === 'UK' ? 'укр. літери/цифри/знаки' : 'англ. літери/цифри/знаки'})`;
 
   const status = document.getElementById('encStatus');
   const bad = raw.split('').filter(c => charToIndex[c] === undefined);
@@ -1009,8 +1041,8 @@ function tryDecode() {
       }
       const row = (bits[0] << 2) | (bits[1] << 1) | bits[2];
       const col = (bits[3] << 2) | (bits[4] << 1) | bits[5];
-      if (row > 5 || col > 5) invalidRings++;
-      indices.push(row * 6 + col);
+      if (row > 6 || col > 6) invalidRings++;
+      indices.push(row * 7 + col);
     }
   }
 
