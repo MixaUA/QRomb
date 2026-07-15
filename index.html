@@ -124,7 +124,10 @@
     <label>Текст (до 19 символів, укр. літери / пробіл / апостроф)</label>
     <input type="text" id="textInput" maxlength="19" value="ТЕО КІТ" oninput="onTextInput()">
     <div class="status" id="encStatus"></div>
-    <button onclick="downloadPNG()">Завантажити PNG</button>
+    <div style="margin-top:10px; display:flex; gap:10px; justify-content:center;">
+      <button onclick="downloadPNG()">Завантажити PNG</button>
+      <button onclick="downloadSVG()">Завантажити SVG</button>
+    </div>
   </div>
 </div>
 
@@ -253,14 +256,16 @@ function drawHub(ctx, fg) {
   ctx.fill();
 }
 
-function drawDisc(canvas, fullBits) {
+function drawDisc(canvas, fullBits, transparentMode = false) {
   const ctx = canvas.getContext('2d');
   const bg = DISC_THEME === 'dark' ? '#0b3d63' : '#f4f1ea';
   const fg = DISC_THEME === 'dark' ? '#ffffff' : document.getElementById('fgColorPicker').value;
 
   ctx.clearRect(0, 0, 480, 480);
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, 480, 480);
+  if (!transparentMode) {
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 480, 480);
+  }
 
   ctx.fillStyle = fg;
   ctx.beginPath();
@@ -311,10 +316,64 @@ function onTextInput() {
 }
 
 function downloadPNG() {
+  const canvas = document.getElementById('encCanvas');
+  const raw = document.getElementById('textInput').value.toUpperCase();
+  const bits = indicesToRingBits(encodeTextToRings(raw));
+  drawDisc(canvas, bits, true); // малюємо без фону для експорту
+  
   const a = document.createElement('a');
   a.download = 'ring-cipher.png';
-  a.href = document.getElementById('encCanvas').toDataURL('image/png');
+  a.href = canvas.toDataURL('image/png');
   a.click();
+  
+  drawDisc(canvas, bits, false); // повертаємо фон на екран
+}
+
+function downloadSVG() {
+  const raw = document.getElementById('textInput').value.toUpperCase();
+  const bits = indicesToRingBits(encodeTextToRings(raw));
+  const fg = DISC_THEME === 'dark' ? '#ffffff' : document.getElementById('fgColorPicker').value;
+  
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 480" width="480" height="480">\n`;
+  
+  // Якорі
+  for (const p of [SRC_BOTTOM, SRC_TOP, SRC_LEFT, SRC_RIGHT]) {
+    svg += `  <circle cx="${p.x}" cy="${p.y}" r="${ANCHOR_SIZE}" fill="${fg}" />\n`;
+  }
+  // Втулка
+  svg += `  <circle cx="${CX}" cy="${CY}" r="${HUB_R}" fill="${fg}" />\n`;
+  
+  // Кільця
+  svg += `  <path fill="${fg}" stroke="${fg}" stroke-width="1.2" d="`;
+  for (let ring = 0; ring < RINGS; ring++) {
+    const rInner = INNER_R + ring * RING_GAP;
+    const rOuter = INNER_R + (ring + 1) * RING_GAP;
+    const numSectors = RING_SECTORS[ring];
+    for (let sector = 0; sector < numSectors; sector++) {
+      if (bits[ring][sector] !== 1) continue;
+      const a0 = START_ANGLE + (sector / numSectors) * Math.PI * 2;
+      const a1 = START_ANGLE + ((sector + 1) / numSectors) * Math.PI * 2;
+      
+      const p0X = CX + Math.cos(a0) * rOuter, p0Y = CY + Math.sin(a0) * rOuter;
+      const p1X = CX + Math.cos(a1) * rOuter, p1Y = CY + Math.sin(a1) * rOuter;
+      const p2X = CX + Math.cos(a1) * rInner, p2Y = CY + Math.sin(a1) * rInner;
+      const p3X = CX + Math.cos(a0) * rInner, p3Y = CY + Math.sin(a0) * rInner;
+      
+      svg += `M ${p0X.toFixed(2)} ${p0Y.toFixed(2)} `;
+      svg += `A ${rOuter.toFixed(2)} ${rOuter.toFixed(2)} 0 0 1 ${p1X.toFixed(2)} ${p1Y.toFixed(2)} `;
+      svg += `L ${p2X.toFixed(2)} ${p2Y.toFixed(2)} `;
+      svg += `A ${rInner.toFixed(2)} ${rInner.toFixed(2)} 0 0 0 ${p3X.toFixed(2)} ${p3Y.toFixed(2)} Z `;
+    }
+  }
+  svg += `" />\n</svg>`;
+  
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.download = 'ring-cipher.svg';
+  a.href = url;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 /* ===================== ДЕКОДЕР (камера) ===================== */
