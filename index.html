@@ -81,6 +81,12 @@
   }
   .badge.ok { background: #1e5c1e; color: #a4e8a4; }
   .badge.err { background: #5c1e1e; color: #e8a4a4; }
+
+  textarea#logArea {
+    width: 100%; box-sizing: border-box; background: #0b3d63; color: #aacbe8;
+    font-family: monospace; font-size: 11px; line-height: 1.4;
+    border: 1px solid #ffffff33; border-radius: 6px; padding: 8px; resize: vertical;
+  }
 </style>
 </head>
 <body>
@@ -122,6 +128,13 @@
     <button onclick="startCam()">Запустити камеру</button>
     <button class="secondary" onclick="stopCam()">Зупинити</button>
     <button class="secondary" onclick="rescanDecode()" id="rescanBtn" style="display:none;">Сканувати ще</button>
+  </div>
+
+  <div class="card" style="margin-top:14px;">
+    <label style="margin-top:0;">Лог (для дебагу — скинь мені весь текст, коли щось піде не так)</label>
+    <textarea id="logArea" readonly rows="10"></textarea>
+    <button onclick="copyLog()">Копіювати</button>
+    <button class="secondary" onclick="clearLog()">Очистити</button>
   </div>
 </div>
 
@@ -457,6 +470,7 @@ async function startCam() {
     locking = false;
     scanFinished = false;
     document.getElementById('rescanBtn').style.display = 'none';
+    logEvent(`сесія: старт, тема=${DISC_THEME}`);
     setStatus('Пошук якорів...', '');
     document.getElementById('decResult').innerHTML = '';
     scanTimer = setInterval(scanFrame, 220);
@@ -502,6 +516,66 @@ function setStatus(text, cls) {
   const st = document.getElementById('decStatus');
   st.textContent = text;
   st.className = 'status' + (cls ? ' ' + cls : '');
+  logStatusChange(text);
+}
+
+/* ================================================================
+   ЛОГ ДЛЯ ДЕБАГУ. Основне джерело — зміни статусу (через setStatus,
+   з дедуплікацією однакових повторів) + окремі детальні події
+   (кожне зчитування кілець з текстом і розбіжностями, фіксація,
+   шум) там, де сам статус не показує достатньо деталей.
+   ================================================================ */
+const MAX_LOG_LINES = 600;
+let logLines = [];
+let lastLoggedStatus = null;
+
+function logTimestamp() {
+  const d = new Date();
+  return d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+
+function logEvent(msg) {
+  logLines.push(`[${logTimestamp()}] ${msg}`);
+  if (logLines.length > MAX_LOG_LINES) logLines.shift();
+  renderLog();
+}
+
+function logStatusChange(text) {
+  if (text === lastLoggedStatus) return; // не дублюємо однаковий статус щокадру
+  lastLoggedStatus = text;
+  logEvent('статус: ' + text);
+}
+
+function renderLog() {
+  const area = document.getElementById('logArea');
+  if (!area) return;
+  area.value = logLines.join('\n');
+  area.scrollTop = area.scrollHeight;
+}
+
+async function copyLog() {
+  const text = logLines.join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus('Лог скопійовано', 'ok');
+  } catch (e) {
+    // фолбек для середовищ без Clipboard API
+    const area = document.getElementById('logArea');
+    area.focus();
+    area.select();
+    try {
+      document.execCommand('copy');
+      setStatus('Лог скопійовано', 'ok');
+    } catch (e2) {
+      setStatus('Не вдалось скопіювати: ' + e2.message, 'err');
+    }
+  }
+}
+
+function clearLog() {
+  logLines = [];
+  lastLoggedStatus = null;
+  renderLog();
 }
 
 function scanFrame() {
@@ -738,6 +812,7 @@ function registerReading(text, mismatches) {
   if (locking) return;
 
   if (mismatches > NOISE_MISMATCH_THRESHOLD) {
+    logEvent(`read: ШУМ mismatches=${mismatches} (поріг ${NOISE_MISMATCH_THRESHOLD})`);
     scanHistory = [];
     targetRingProgress = 0;
     setStatus('Сирий шум, шукаю патерн...', '');
@@ -745,6 +820,7 @@ function registerReading(text, mismatches) {
   }
 
   const reading = text + '|' + mismatches;
+  logEvent(`read: "${text || '(порожньо)'}" mismatches=${mismatches}`);
   if (scanHistory.length && scanHistory[scanHistory.length - 1] === reading) {
     scanHistory.push(reading);
   } else {
@@ -768,6 +844,7 @@ function registerReading(text, mismatches) {
 }
 
 function finishScan(text, mismatches) {
+  logEvent(`LOCK: "${text}" mismatches=${mismatches}`);
   setStatus('Зафіксовано: ' + (mismatches === 0 ? 'без розбіжностей' : `${mismatches} розбіжностей`), mismatches === 0 ? 'ok' : 'warn');
   locking = false;
   scanFinished = true;
