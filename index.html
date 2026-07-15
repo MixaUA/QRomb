@@ -81,6 +81,21 @@
   }
   .badge.ok { background: #1e5c1e; color: #a4e8a4; }
   .badge.err { background: #5c1e1e; color: #e8a4a4; }
+
+  #centerGuide {
+    position: absolute; top: 50%; left: 50%;
+    width: 55%; height: 55%;
+    transform: translate(-50%, -50%);
+    border: 2px dashed rgba(255,255,255,0.35);
+    border-radius: 12px;
+    pointer-events: none;
+  }
+
+  textarea#logArea {
+    width: 100%; box-sizing: border-box; background: #0b3d63; color: #aacbe8;
+    font-family: monospace; font-size: 11px; line-height: 1.4;
+    border: 1px solid #ffffff33; border-radius: 6px; padding: 8px; resize: vertical;
+  }
 </style>
 </head>
 <body>
@@ -116,11 +131,19 @@
       <video id="camVideo" autoplay playsinline muted></video>
       <canvas id="sampleCanvas" width="340" height="340"></canvas>
       <canvas id="decCanvas" width="340" height="340"></canvas>
+      <div id="centerGuide" style="display:none;"></div>
     </div>
     <div class="status" id="decStatus">Радар вимкнено</div>
     <div class="result" id="decResult"></div>
     <button onclick="startCam()">Запустити камеру</button>
     <button class="secondary" onclick="stopCam()">Зупинити</button>
+  </div>
+
+  <div class="card" style="margin-top:14px;">
+    <label style="margin-top:0;">Лог (для дебагу — скинь мені весь текст, коли щось піде не так)</label>
+    <textarea id="logArea" readonly rows="10"></textarea>
+    <button onclick="copyLog()">Копіювати</button>
+    <button class="secondary" onclick="clearLog()">Очистити</button>
   </div>
 </div>
 
@@ -472,6 +495,8 @@ async function startCam() {
     targetRingProgress = 0;
     ringProgress = 0;
     locking = false;
+    document.getElementById('centerGuide').style.display = 'block';
+    logEvent(`сесія: старт, тема=${DISC_THEME}`);
     setStatus('Пошук якорів...', '');
     document.getElementById('decResult').innerHTML = '';
     scanTimer = setInterval(scanFrame, 220);
@@ -512,6 +537,7 @@ function teardownCamera() {
   dc.getContext('2d').clearRect(0, 0, dc.width, dc.height);
   const sc = document.getElementById('sampleCanvas');
   sc.getContext('2d').clearRect(0, 0, sc.width, sc.height);
+  document.getElementById('centerGuide').style.display = 'none';
 }
 
 function stopCam() {
@@ -536,6 +562,65 @@ function setStatus(text, cls) {
   const st = document.getElementById('decStatus');
   st.textContent = text;
   st.className = 'status' + (cls ? ' ' + cls : '');
+  logStatusChange(text);
+}
+
+/* ================================================================
+   ЛОГ ДЛЯ ДЕБАГУ. Основне джерело — зміни статусу (через setStatus,
+   з дедуплікацією однакових повторів) + окремі детальні події
+   (кожне зчитування кілець з текстом і розбіжностями, фіксація,
+   шум) там, де сам статус не показує достатньо деталей.
+   ================================================================ */
+const MAX_LOG_LINES = 600;
+let logLines = [];
+let lastLoggedStatus = null;
+
+function logTimestamp() {
+  const d = new Date();
+  return d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
+}
+
+function logEvent(msg) {
+  logLines.push(`[${logTimestamp()}] ${msg}`);
+  if (logLines.length > MAX_LOG_LINES) logLines.shift();
+  renderLog();
+}
+
+function logStatusChange(text) {
+  if (text === lastLoggedStatus) return; // не дублюємо однаковий статус щокадру
+  lastLoggedStatus = text;
+  logEvent('статус: ' + text);
+}
+
+function renderLog() {
+  const area = document.getElementById('logArea');
+  if (!area) return;
+  area.value = logLines.join('\n');
+  area.scrollTop = area.scrollHeight;
+}
+
+async function copyLog() {
+  const text = logLines.join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus('Лог скопійовано', 'ok');
+  } catch (e) {
+    const area = document.getElementById('logArea');
+    area.focus();
+    area.select();
+    try {
+      document.execCommand('copy');
+      setStatus('Лог скопійовано', 'ok');
+    } catch (e2) {
+      setStatus('Не вдалось скопіювати: ' + e2.message, 'err');
+    }
+  }
+}
+
+function clearLog() {
+  logLines = [];
+  lastLoggedStatus = null;
+  renderLog();
 }
 
 function scanFrame() {
@@ -770,9 +855,36 @@ function tryDecode() {
     return;
   }
 
+  /* ================================================================
+     КАЛІБРУВАННЯ ПОРОГУ ВІД САМОГО ДИСКА. Глобальний Оцу з усього
+     кадру (вище) страждає, коли частина сцени навколо диска яскравіша
+     чи темніша за сам диск (тінь на одній половині, сонце на іншій,
+     чи просто зайвий фон навколо). Тепер, коли диск уже знайдено,
+     є два гарантовані контрольні зразки: сам якір (завжди колір
+     "знаку") і точка в тихій зоні між кільцями й якорями (завжди
+     колір фону). Беремо їхню середину як поріг — це калібрування під
+     фактичне освітлення ЦЬОГО диска в ЦЬОМУ кадрі, а не статистика
+     всієї сцени. Оцу лишається як старт для самого пошуку якорів
+     (де диска ще не видно) і як резерв, якщо калібрування виглядає
+     сумнівним (зразки фону/знаку майже не відрізняються).
+     ================================================================ */
+  const fgLum = lum(Math.round(bottomAnchor.x), Math.round(bottomAnchor.y));
+  const bgAngleDiagram = 30 * Math.PI / 180; // кут, свідомо далекий від усіх 4 якорів (90/210/270/330)
+  const bgRefRadius = (OUTER_R + ANCHOR_R) / 2; // середина тихої зони між кільцями й якорями
+  const bgDiagram = { x: CX + Math.cos(bgAngleDiagram) * bgRefRadius, y: CY + Math.sin(bgAngleDiagram) * bgRefRadius };
+  const bgScreen = applyHomography(transform, bgDiagram.x, bgDiagram.y);
+  const bgLum = lum(Math.round(bgScreen.x), Math.round(bgScreen.y));
+  const MIN_CALIBRATION_SEPARATION = 15;
+  if (Math.abs(fgLum - bgLum) >= MIN_CALIBRATION_SEPARATION) {
+    THRESH = (fgLum + bgLum) / 2;
+  } else {
+    logEvent(`калібрування диска ненадійне (fg=${fgLum.toFixed(0)} bg=${bgLum.toFixed(0)}), лишаю Оцу`);
+  }
+
   // --- КРОК 3: зчитування 10 кілець (6 унікальних + 6 дзеркальних) ---
   const indices = [];
   let totalMismatches = 0;
+  let invalidRings = 0; // row/col ≥6 — математично неможливо для справжнього символу, стовідсоткова ознака браку
 
   for (let ring = 0; ring < RINGS; ring++) {
     const ringMidR = INNER_R + (ring + 0.5) * RING_GAP; // радіус у системі координат ДИСКА (0..480), без масштабу
@@ -805,6 +917,9 @@ function tryDecode() {
 
     const row = (bits[0] << 2) | (bits[1] << 1) | bits[2];
     const col = (bits[3] << 2) | (bits[4] << 1) | bits[5];
+    // алфавіт використовує лише row/col у діапазоні 0..5 (6×6 = 36 позицій);
+    // 6 чи 7 виникає лише через перевернутий старший біт і завжди означає брак
+    if (row > 5 || col > 5) invalidRings++;
     indices.push(row * 6 + col);
   }
 
@@ -814,20 +929,23 @@ function tryDecode() {
     text += indexToChar(idx);
   }
 
-  registerReading(text, totalMismatches);
+  registerReading(text, totalMismatches, invalidRings);
 }
 
 /* накопичення підтверджень + lock-hold пауза перед фіксацією,
    за тим самим принципом, що в registerReading робочого сканера */
-function registerReading(text, mismatches) {
+function registerReading(text, mismatches, invalidRings) {
   if (locking) return;
 
-  if (mismatches > NOISE_MISMATCH_THRESHOLD) {
+  if (mismatches > NOISE_MISMATCH_THRESHOLD || invalidRings > 0) {
+    logEvent(`read: ШУМ mismatches=${mismatches} invalid=${invalidRings} (поріг ${NOISE_MISMATCH_THRESHOLD})`);
     scanHistory = [];
     targetRingProgress = 0;
     setStatus('Сирий шум, шукаю патерн...', '');
     return;
   }
+
+  logEvent(`read: "${text || '(порожньо)'}" mismatches=${mismatches}`);
 
   // Порівнюємо серію лише за текстом. Якщо додати сюди ще й mismatches,
   // лічильник збігів практично ніколи не накопичиться: кількість
@@ -859,6 +977,7 @@ function registerReading(text, mismatches) {
    зупиняється (через teardownCamera), результат лишається на екрані.
    Наступне сканування вимагає нового натискання "Запустити камеру". */
 function finishScan(text, mismatches) {
+  logEvent(`LOCK: "${text}" mismatches=${mismatches}`);
   teardownCamera();
   setStatus('Завершено ✓ — натисни «Запустити камеру» для нового диска', mismatches === 0 ? 'ok' : 'warn');
 }
