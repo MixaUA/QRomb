@@ -415,7 +415,7 @@ function isIsolatedOnBackground(data, W, H, minX, maxX, minY, maxY, threshold) {
   return total > 0 && (lightCount / total) >= 0.6;
 }
 
-function findDarkBlobs(imgData, W, H, step, threshold) {
+function findDarkBlobs(imgData, W, H, step, threshold, searchBounds) {
   const data = imgData.data;
   const visited = new Uint8Array(W * H);
   const qx = new Int32Array(FLOOD_CAP);
@@ -423,13 +423,18 @@ function findDarkBlobs(imgData, W, H, step, threshold) {
   const blobs = [];
   let rejectedCapped = 0, rejectedTooBig = 0, rejectedShape = 0;
 
+  const x0 = searchBounds ? Math.max(0, Math.round(searchBounds.minX)) : 0;
+  const x1 = searchBounds ? Math.min(W, Math.round(searchBounds.maxX)) : W;
+  const y0 = searchBounds ? Math.max(0, Math.round(searchBounds.minY)) : 0;
+  const y1 = searchBounds ? Math.min(H, Math.round(searchBounds.maxY)) : H;
+
   function lumAt(x, y) {
     const i = (y * W + x) * 4;
     return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
   }
 
-  for (let y = 0; y < H; y += step) {
-    for (let x = 0; x < W; x += step) {
+  for (let y = y0; y < y1; y += step) {
+    for (let x = x0; x < x1; x += step) {
       if (visited[y * W + x]) continue;
       if (!isDark(lumAt(x, y), threshold)) continue;
       qx[0] = x; qy[0] = y;
@@ -552,10 +557,11 @@ function sampleFromHomography(imgData, W, H, Q, quadMap, transform) {
    кутів — і використовує ту саму функцію computeAgreement, без дублю. */
 function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity, activeCount) {
   const threshold = computeAdaptiveDarkThreshold(imgData);
-  const blobs = findDarkBlobs(imgData, W, H, 3, threshold);
+  const blobs = findDarkBlobs(imgData, W, H, 3, threshold, trackedBounds);
 
   if (blobs.length < 4) {
-    return { ok: false, reason: `замало плям (${blobs.length}, треба 4)`, blobCount: blobs.length };
+    trackingMiss();
+    return { ok: false, reason: `замало плям (${blobs.length}, треба 4)${trackedBounds ? ' [звужена зона]' : ''}`, blobCount: blobs.length };
   }
 
   blobs.sort((a, b) => b.size - a.size);
@@ -580,7 +586,11 @@ function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity
     }
   }
 
-  log(`Якір: плям=${blobs.length}, топ-4 розміри=[${top4.map(b=>b.size).join(',')}], розрив до 5-ї=${sizeGap===Infinity?'∞':sizeGap.toFixed(1)+'x'}, найкраща узгодженість=${(best.agreement*100).toFixed(1)}%.`);
+  log(`Якір: плям=${blobs.length}${trackedBounds ? ' [звужена зона]' : ' [повний кадр]'}, топ-4 розміри=[${top4.map(b=>b.size).join(',')}], розрив до 5-ї=${sizeGap===Infinity?'∞':sizeGap.toFixed(1)+'x'}, найкраща узгодженість=${(best.agreement*100).toFixed(1)}%.`);
+
+  // якорі знайдені (навіть якщо узгодженість поки слабка) — звужуємо
+  // зону пошуку навколо них для наступного кадру
+  updateTrackedBounds(top4, W, H);
 
   return { ok: true, blobCount: blobs.length, top4, sizeGap, best, corners };
 }
@@ -595,10 +605,51 @@ const STABILITY_TOL_PX = 14;
 let recentCentroids = [];
 let recentTexts = [];
 
+/* ================================================================
+   ТРЕКІНГ ЗОНИ ПОШУКУ: щойно якорі знайдені (навіть з посередньою
+   узгодженістю), наступний кадр шукає ТІЛЬКИ в невеликій зоні навколо
+   них — а не по всьому кадру заново. Це прибирає головну причину
+   "стрибання": без трекінгу кожен кадр наново змагається з усім, що є
+   в кімнаті (одяг, тінь, волосся), і будь-який темний об'єкт деінде в
+   кадрі має такий самий шанс потрапити в топ-4, як і справжній якір.
+   Звужена зона різко зменшує кількість "конкурентів" з інших частин
+   кадру. Якщо кілька кадрів поспіль у звуженій зоні нічого путнього не
+   знайдено — трекінг "здається" і повертається до пошуку по всьому
+   кадру (той самий принцип TRACKING_LOST_AFTER, що й у кулачковому
+   сканері). */
+let trackedBounds = null; // {minX,maxX,minY,maxY} або null (повний кадр)
+let trackedMissCount = 0;
+const TRACK_PADDING_FACTOR = 0.6; // запас навколо знайденої зони, як частка її розміру
+const TRACK_LOST_AFTER = 6;
+
+function resetTrackedBounds() { trackedBounds = null; trackedMissCount = 0; }
+
+function updateTrackedBounds(pts, W, H) {
+  let minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  const w = maxX - minX, h = maxY - minY;
+  const padX = Math.max(30, w * TRACK_PADDING_FACTOR);
+  const padY = Math.max(30, h * TRACK_PADDING_FACTOR);
+  trackedBounds = {
+    minX: Math.max(0, minX - padX), maxX: Math.min(W, maxX + padX),
+    minY: Math.max(0, minY - padY), maxY: Math.min(H, maxY + padY)
+  };
+  trackedMissCount = 0;
+}
+
+function trackingMiss() {
+  if (!trackedBounds) return;
+  trackedMissCount++;
+  if (trackedMissCount >= TRACK_LOST_AFTER) resetTrackedBounds();
+}
+
 function centroidOf(pts) {
   return { x: pts.reduce((s,p)=>s+p.x,0)/pts.length, y: pts.reduce((s,p)=>s+p.y,0)/pts.length };
 }
-function resetStability() { recentCentroids = []; recentTexts = []; }
+function resetStability() { recentCentroids = []; recentTexts = []; resetTrackedBounds(); }
 
 function checkStability(centroid, text) {
   recentCentroids.push(centroid);
@@ -757,13 +808,16 @@ function scanFrame() {
   const det = detectAndDecode(imgData, size, size, Q, quadMap, order, groundTruth, capacity, activeCount);
 
   if (!det.ok) {
-    resetStability();
+    recentCentroids = []; recentTexts = [];
     drawLiveOverlay(size, size, det, `Шукаю якорі... (${det.reason})`);
     document.getElementById('camStatus').textContent = `Пошук: ${det.reason}`;
     return;
   }
   if (det.best.agreement < MIN_AGREEMENT) {
-    resetStability();
+    // якорі знайдені, просто поточна гіпотеза повороту невдала — НЕ
+    // скидаємо трекінг зони (updateTrackedBounds уже викликано в
+    // detectAndDecode), скидаємо лише серію тексту для стабільності
+    recentCentroids = []; recentTexts = [];
     drawLiveOverlay(size, size, det, `Якорі знайдено, узгодженість слабка (${(det.best.agreement*100).toFixed(0)}%)`);
     document.getElementById('camStatus').textContent = `Кандидат (плям=${det.blobCount}) — узгодженість ${(det.best.agreement*100).toFixed(0)}%, шукаю стабільніший кадр...`;
     return;
