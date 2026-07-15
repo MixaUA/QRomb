@@ -369,9 +369,20 @@ function applyHomography(H, x, y) {
 // плями майже завжди і є якорі, без потреби відрізняти їх кольором.
 // =====================================================================
 const MIN_BLOB_SIZE = 3;
-const MAX_BLOB_SIZE = 4000; // з запасом під суцільні кружечки на різній відстані від камери
+// МУСИТЬ бути помітно менше за FLOOD_CAP: якщо пляма впирається в
+// FLOOD_CAP, її справжній розмір НЕВІДОМИЙ (могла бути будь-якою
+// гігантською) — така пляма відхиляється явно (див. hitCap нижче), а
+// не порівнюється з цим порогом. MAX_BLOB_SIZE стосується лише плям,
+// чий розмір дійсно виміряний повністю.
+const MAX_BLOB_SIZE = 900;
 const FLOOD_CAP = 3000;
 const DARK_THRESHOLD_RATIO = 0.68;
+// округлість: суцільний кружечок-якір заповнює ~π/4≈0.785 площі своєї
+// bounding box. Велика безформна пляма (тінь, одяг) зазвичай суттєво
+// відхиляється від цього — використовуємо як додатковий фільтр форми.
+const MIN_FILL_RATIO = 0.55;
+const MAX_FILL_RATIO = 0.95;
+const MAX_BLOB_ASPECT = 1.8;
 
 function computeAdaptiveDarkThreshold(imgData) {
   const data = imgData.data;
@@ -410,6 +421,7 @@ function findDarkBlobs(imgData, W, H, step, threshold) {
   const qx = new Int32Array(FLOOD_CAP);
   const qy = new Int32Array(FLOOD_CAP);
   const blobs = [];
+  let rejectedCapped = 0, rejectedTooBig = 0, rejectedShape = 0;
 
   function lumAt(x, y) {
     const i = (y * W + x) * 4;
@@ -439,10 +451,25 @@ function findDarkBlobs(imgData, W, H, step, threshold) {
           if (tail < FLOOD_CAP) { qx[tail] = nx; qy[tail] = ny; tail++; }
         }
       }
-      if (cnt < MIN_BLOB_SIZE || cnt > MAX_BLOB_SIZE) continue;
+      if (cnt < MIN_BLOB_SIZE) continue;
+      // впёрлися в межу флуд-філу — справжній розмір невідомий, майже
+      // напевно велика безформна пляма (тінь/одяг/край кадру), а не
+      // компактний якір; ЯВНО відхиляємо, а не порівнюємо з MAX_BLOB_SIZE
+      if (cnt >= FLOOD_CAP) { rejectedCapped++; continue; }
+      if (cnt > MAX_BLOB_SIZE) { rejectedTooBig++; continue; }
+
+      const bboxW = maxX - minX + 1, bboxH = maxY - minY + 1;
+      const aspect = Math.max(bboxW, bboxH) / Math.max(1, Math.min(bboxW, bboxH));
+      if (aspect > MAX_BLOB_ASPECT) { rejectedShape++; continue; }
+      const fillRatio = cnt / (bboxW * bboxH);
+      if (fillRatio < MIN_FILL_RATIO || fillRatio > MAX_FILL_RATIO) { rejectedShape++; continue; }
+
       if (!isIsolatedOnBackground(data, W, H, minX, maxX, minY, maxY, threshold)) continue;
       blobs.push({ x: sx / cnt, y: sy / cnt, size: cnt });
     }
+  }
+  if (rejectedCapped || rejectedTooBig || rejectedShape) {
+    log(`Блоб-фільтр: відхилено ${rejectedCapped} "безмежних", ${rejectedTooBig} завеликих, ${rejectedShape} неокруглих плям.`);
   }
   return blobs;
 }
