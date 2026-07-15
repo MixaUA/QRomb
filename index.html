@@ -65,7 +65,7 @@ body {
 .accordion-container {
   width: min(460px, 92vw);
   min-height: 460px;
-  margin-top: 80px;
+  margin-top: 50px;
   background-color: #0b3d63;
   position: relative;
   display: grid;
@@ -221,7 +221,7 @@ video {
 
 #centerGuide {
   position: absolute; top: 50%; left: 50%;
-  width: 55%; height: 55%;
+  width: 68%; height: 68%;
   transform: translate(-50%, -50%);
   border: 2px dashed rgba(255,255,255,0.35);
   border-radius: 12px;
@@ -1001,26 +1001,32 @@ function onUpArrow() {
 /* ===== ВИВІД / ДРУКАРСЬКА МАШИНКА (одне поле — саме послання) ===== */
 
 const ACCORDION_TRANSITION_MS = 2200; // збігається з CSS transition роздільника
-const TYPE_SPEED_MS = 110; // повільніше друкування
+const TYPE_SPEED_MS = 500;      // базовий інтервал між символами — «людський» темп
+const TYPE_SPEED_JITTER_MS = 220; // випадковий розкид навколо базового інтервалу
 
 let revealToken = 0;
 
-function typeInto(elId, cursorId, text, speed, myToken) {
+/* друкує по символу з випадковим інтервалом навколо TYPE_SPEED_MS,
+   щоб виглядало як людський набір тексту, а не рівномірний метроном */
+function typeInto(elId, cursorId, text, myToken) {
   return new Promise((resolve) => {
     const el = document.getElementById(elId);
     const cursor = document.getElementById(cursorId);
     if (!el) { resolve(); return; }
     let i = 0;
-    const timer = setInterval(() => {
-      if (myToken !== revealToken) { clearInterval(timer); resolve(); return; }
-      el.textContent += text[i];
-      i++;
+    function typeNext() {
+      if (myToken !== revealToken) { resolve(); return; }
       if (i >= text.length) {
-        clearInterval(timer);
         if (cursor) cursor.classList.add('done');
         resolve();
+        return;
       }
-    }, speed);
+      el.textContent += text[i];
+      i++;
+      const delay = TYPE_SPEED_MS + (Math.random() * 2 - 1) * TYPE_SPEED_JITTER_MS;
+      setTimeout(typeNext, Math.max(150, delay));
+    }
+    typeNext();
   });
 }
 
@@ -1043,7 +1049,7 @@ async function revealMessage(text) {
   await pause(ACCORDION_TRANSITION_MS);
   if (myToken !== revealToken) return;
 
-  await typeInto('msgText', 'msgCursor', text, TYPE_SPEED_MS, myToken);
+  await typeInto('msgText', 'msgCursor', text, myToken);
 }
 
 /* ===== ІНІЦІАЛІЗАЦІЯ ===== */
