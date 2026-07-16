@@ -628,7 +628,7 @@ function computeAgreement(quadResults, capacity) {
   return sumAgree / (capacity * 4);
 }
 
-function sampleFromHomography(imgData, W, H, Q, quadMap, transform) {
+function sampleFromHomography(imgData, W, H, Q, quadMap, transform, corners) {
   const data = imgData.data;
   function lumAt(x, y) {
     x = Math.round(x); y = Math.round(y);
@@ -646,9 +646,44 @@ function sampleFromHomography(imgData, W, H, Q, quadMap, transform) {
       const p = applyHomography(transform, lx, ly);
       sampledLums.push(lumAt(p.x, p.y));
     }
-  let minL = 255, maxL = 0;
-  for (const l of sampledLums) { if (l < minL) minL = l; if (l > maxL) maxL = l; }
-  const threshold = (minL + maxL) / 2;
+
+  /* ================================================================
+     КАЛІБРУВАННЯ ПОРОГУ ВІД САМОЇ СХЕМИ (перенесено з кільцевого шифру).
+     Старий варіант брав (min+max)/2 серед 64 семплів ДАНИХ — це working
+     тільки якщо "1" і "0" клітинок приблизно порівну. У реальному
+     повідомленні їх зазвичай НЕрівна кількість (наприклад лише 15-20
+     темних клітинок із 64), і на нерівномірному фото (відблиск, муар
+     від екрана, нерівне освітлення) такий поріг систематично зсувається
+     — звідси висока УЗГОДЖЕНІСТЬ між квадрантами (та сама помилка
+     застосовується консистентно скрізь) при НИЗЬКІЙ точності проти
+     очікуваного тексту.
+
+     Замість статистики по самих даних беремо ДВІ ГАРАНТОВАНІ КОНТРОЛЬНІ
+     ТОЧКИ, чий колір відомий наперед незалежно від вмісту повідомлення:
+       - "fg" (темна): сам якір-коло (corners.BR) — завжди суцільно
+         темний, це фіксована частина схеми, а не дані;
+       - "bg" (світла): точка в гарантовано порожній зоні між краєм
+         даних і якорями — структура схеми це гарантує (відступ "off"),
+         там ніколи не буває стібків незалежно від тексту чи Q.
+     Якщо ці дві точки на фото достатньо контрастні — довіряємо їм.
+     Якщо контраст замалий (відблиск/засвітка все "з'їла") — резервний
+     варіант: стара логіка (min+max)/2 по самих даних. */
+  const gap = CELL, off = gap + CELL / 2;
+  const bgLocal = { x: squareSize / 2, y: -off / 2 }; // порожня смуга між TL і TR
+  const bgScreen = applyHomography(transform, bgLocal.x, bgLocal.y);
+  const bgLum = lumAt(bgScreen.x, bgScreen.y);
+  const fgScreen = applyHomography(transform, corners.BR.x, corners.BR.y);
+  const fgLum = lumAt(fgScreen.x, fgScreen.y);
+
+  const MIN_CALIBRATION_SEPARATION = 15;
+  let threshold;
+  if (Math.abs(bgLum - fgLum) >= MIN_CALIBRATION_SEPARATION) {
+    threshold = (bgLum + fgLum) / 2;
+  } else {
+    let minL = 255, maxL = 0;
+    for (const l of sampledLums) { if (l < minL) minL = l; if (l > maxL) maxL = l; }
+    threshold = (minL + maxL) / 2;
+  }
 
   const results = [[], [], [], []];
   for (let qy = 0; qy < 2; qy++) {
@@ -668,7 +703,13 @@ function sampleFromHomography(imgData, W, H, Q, quadMap, transform) {
       results[qIdx] = bitsForQuad;
     }
   }
-  return { results, threshold };
+  return {
+    results,
+    threshold,
+    calibrated: Math.abs(bgLum - fgLum) >= MIN_CALIBRATION_SEPARATION,
+    bgLum: Math.round(bgLum),
+    fgLum: Math.round(fgLum)
+  };
 }
 
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
@@ -819,7 +860,7 @@ function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity
       const shift = (circleIdx - 2 + 4) % 4; // ротуємо, щоб коло стало на позицію BR (індекс 2)
       const dstCyclic = [0, 1, 2, 3].map(i => variant[(i + shift) % 4]);
       const transform = solveHomography(srcCyclic, dstCyclic);
-      const sampled = sampleFromHomography(imgData, W, H, Q, quadMap, transform);
+      const sampled = sampleFromHomography(imgData, W, H, Q, quadMap, transform, corners);
       const agreement = computeAgreement(sampled.results, capacity);
       if (!best || agreement > best.agreement) best = { transform, agreement, sampled, dstCyclic };
     }
@@ -831,7 +872,10 @@ function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity
   }
 
   const bestSides = [dist(best.dstCyclic[0],best.dstCyclic[1]), dist(best.dstCyclic[1],best.dstCyclic[2]), dist(best.dstCyclic[2],best.dstCyclic[3]), dist(best.dstCyclic[3],best.dstCyclic[0])];
-  log(`Якір: плям=${blobs.length}${trackedBounds ? ' [звужена зона]' : ' [повний кадр]'}, кандидатів=${circleCandidates.length} кіл + ${diamondCandidates.length} ромбів, квадратів=${quads.length}, сторони обраного=[${bestSides.map(s=>s.toFixed(0)).join(',')}], узгодженість=${(best.agreement*100).toFixed(1)}%.`);
+  const calInfo = best.sampled.calibrated
+    ? `калібрування OK (fg=${best.sampled.fgLum}, bg=${best.sampled.bgLum}, поріг=${best.sampled.threshold.toFixed(0)})`
+    : `калібрування НЕНАДІЙНЕ (fg=${best.sampled.fgLum}, bg=${best.sampled.bgLum}) — резерв min/max`;
+  log(`Якір: плям=${blobs.length}${trackedBounds ? ' [звужена зона]' : ' [повний кадр]'}, кандидатів=${circleCandidates.length} кіл + ${diamondCandidates.length} ромбів, квадратів=${quads.length}, сторони обраного=[${bestSides.map(s=>s.toFixed(0)).join(',')}], узгодженість=${(best.agreement*100).toFixed(1)}%, ${calInfo}.`);
 
   updateTrackedBounds(best.dstCyclic, W, H);
 
