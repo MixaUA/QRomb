@@ -100,11 +100,6 @@
   <div class="panel">
     <label>Фраза (укр. літери, пробіл, кома, крапка)</label>
     <input type="text" id="phraseInput" value="я тебе кохаю" maxlength="60" />
-    <div class="row">
-      <label>Розмір сектора (Q×Q)</label>
-      <input type="range" id="qSize" min="4" max="16" value="8" step="1" />
-      <span class="val" id="qSizeVal">8</span>
-    </div>
     <div class="capacity-note" id="capacityNote"></div>
   </div>
 
@@ -310,12 +305,20 @@ function buildProximityOrder(Q) {
   return order;
 }
 
+function getQ() {
+  const el = document.getElementById('phraseInput');
+  if (!el) return 4;
+  const { bits } = encodePhrase(el.value);
+  return Math.max(4, Math.ceil(Math.sqrt(bits.length)));
+}
+
 function updateCapacityNote() {
-  const Q = parseInt(document.getElementById('qSize').value);
+  const el = document.getElementById('capacityNote');
+  if (!el) return;
+  const Q = getQ();
   const capacity = Q * Q;
   const maxChars = Math.floor(capacity / 6);
-  document.getElementById('capacityNote').textContent =
-    `Сектор ${Q}×${Q} = ${capacity} біт → максимум ~${maxChars} символів на унікальний блок (повторюється в 4 секторах)`;
+  el.textContent = `Авто-Q = ${Q}×${Q} = ${capacity} біт → максимум ~${maxChars} символів (повторюється в 4 секторах)`;
 }
 
 function getQuadRotationMap() {
@@ -406,7 +409,7 @@ function escapeHtml(s) {
 
 function generateSchema() {
   const phrase = document.getElementById('phraseInput').value;
-  const Q = parseInt(document.getElementById('qSize').value);
+  const Q = getQ();
   const quadMap = getQuadRotationMap();
   const { bits, charCount } = encodePhrase(phrase);
   const capacity = Q * Q;
@@ -432,7 +435,7 @@ function generateSchema() {
    інтерфейсу теж потрапляють у кадр і додають зайвий контрастний шум. */
 function openFullscreenSchema() {
   const phrase = document.getElementById('phraseInput').value;
-  const Q = parseInt(document.getElementById('qSize').value);
+  const Q = getQ();
   const quadMap = getQuadRotationMap();
   const { bits } = encodePhrase(phrase);
   const capacity = Q * Q;
@@ -616,7 +619,7 @@ function findDarkBlobs(imgData, W, H, step, threshold, searchBounds) {
     }
   }
   if (rejectedCapped || rejectedTooBig || rejectedShape) {
-    log(`Блоб-фільтр: відхилено ${rejectedCapped} "безмежних", ${rejectedTooBig} завеликих, ${rejectedShape} неокруглих плям.`);
+    console.debug(`Блоб-фільтр: відхилено ${rejectedCapped} "безмежних", ${rejectedTooBig} завеликих, ${rejectedShape} неокруглих плям.`);
   }
   return blobs;
 }
@@ -1115,7 +1118,7 @@ function scanFrame() {
   }
   const imgData = ctx.getImageData(0, 0, size, size);
 
-  const Q = parseInt(document.getElementById('qSize').value);
+  const Q = getQ();
   const quadMap = getQuadRotationMap();
   const phrase = document.getElementById('phraseInput').value;
   const { bits, charCount } = encodePhrase(phrase);
@@ -1226,10 +1229,7 @@ window.rescan = rescan;
 
 function clearLogFn() { document.getElementById('logBox').value = ''; log('Лог очищено.'); }
 
-document.getElementById('qSize').addEventListener('input', (e) => {
-  document.getElementById('qSizeVal').textContent = e.target.value;
-  updateCapacityNote();
-});
+document.getElementById('phraseInput').addEventListener('input', generateSchema);
 ['rotTL','rotTR','rotBL','rotBR'].forEach(id => {
   document.getElementById(id).addEventListener('change', generateSchema);
 });
