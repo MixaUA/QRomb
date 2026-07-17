@@ -160,13 +160,27 @@
     <label>Детальний лог</label>
     <textarea id="logBox" readonly></textarea>
     <div class="btn-row">
-      <button class="secondary" id="copyLogBtn">Скопіювати лог</button>
+      <button class="secondary" id="downloadLogBtn">Завантажити лог</button>
       <button class="secondary" id="clearLogBtn">Очистити лог</button>
     </div>
   </div>
 </div>
 
 <script>
+function downloadLog() {
+  const box = document.getElementById('logBox');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const blob = new Blob([box.value], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `log_${timestamp}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function log(msg) {
   const box = document.getElementById('logBox');
   const time = new Date().toLocaleTimeString();
@@ -1210,11 +1224,6 @@ function rescan() {
 }
 window.rescan = rescan;
 
-function copyLogFn() {
-  const box = document.getElementById('logBox');
-  box.select();
-  navigator.clipboard.writeText(box.value).catch(() => { document.execCommand('copy'); });
-}
 function clearLogFn() { document.getElementById('logBox').value = ''; log('Лог очищено.'); }
 
 document.getElementById('qSize').addEventListener('input', (e) => {
@@ -1226,7 +1235,7 @@ document.getElementById('qSize').addEventListener('input', (e) => {
 });
 document.getElementById('genSchemaBtn').addEventListener('click', generateSchema);
 document.getElementById('camToggleBtn').addEventListener('click', toggleCamera);
-document.getElementById('copyLogBtn').addEventListener('click', copyLogFn);
+document.getElementById('downloadLogBtn').addEventListener('click', downloadLog);
 document.getElementById('clearLogBtn').addEventListener('click', clearLogFn);
 
 updateCapacityNote();
