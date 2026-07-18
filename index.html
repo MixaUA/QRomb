@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ромб-вишиванка — асиметричні якорі (3 ромби + 1 коло)</title>
+<title>Ромб-вишиванка — асиметричні якорі (3 кола + 1 ромб)</title>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; background: #ffffff; color: #16222c; font-family: sans-serif; padding: 20px 12px 60px; }
@@ -22,7 +22,7 @@
   button { width: 100%; padding: 12px; border-radius: 8px; border: 2px solid rgba(0,0,0,0.35); background: #ffffff; color: #16222c; font-size: 14px; cursor: pointer; margin-top: 8px; }
   button:hover { background: rgba(0,0,0,0.05); }
   button.secondary { border-color: rgba(0,0,0,0.2); font-size: 13px; }
-  canvas { display: block; margin: 0 auto; background: #f2e9d8; border-radius: 8px; max-width: 100%; height: auto; }
+  canvas { display: block; margin: 0 auto; background: #ffffff; border-radius: 8px; max-width: 100%; height: auto; }
   .canvas-box { text-align: center; }
   .canvas-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(0,0,0,0.45); margin-top: 6px; }
   .results { font-family: monospace; font-size: 13px; line-height: 1.8; }
@@ -95,11 +95,15 @@
 <button id="fullscreenCloseBtn" class="secondary" onclick="closeFullscreenSchema()" style="display:none;">Закрити</button>
 <div class="wrap">
   <h1>Ромб-вишиванка — асиметричні якорі</h1>
-  <div class="subtitle">Рамка = 3 ромби + 1 коло (низ-право), геометрія = повна гомографія (як у кільцевому шифрі)</div>
+  <div class="subtitle">Рамка = 3 кола + 1 ромб (низ-право), геометрія = повна гомографія (як у кільцевому шифрі)</div>
 
   <div class="panel">
     <label>Фраза (укр. літери, пробіл, кома, крапка)</label>
-    <input type="text" id="phraseInput" value="я тебе кохаю" maxlength="60" />
+    <input type="text" id="phraseInput" value="я тебе кохаю" maxlength="120" />
+    <div class="row">
+      <label>Розмір сектора (авто)</label>
+      <span class="val" id="qSizeVal">—</span>
+    </div>
     <div class="capacity-note" id="capacityNote"></div>
   </div>
 
@@ -135,7 +139,7 @@
 
   <div class="panel">
     <label>Камера — автосканування</label>
-    <div class="warn-note">3 чорні ромби і 1 чорне коло (кут "низ-право") — коло однозначно задає орієнтацію, тому перебір гіпотез повороту більше не потрібен. Наведи схему в пунктирну рамку. Синя заливка — знайдена гомографія. Червоні цятки — розпізнані "1", лишаються до нового сканування.</div>
+    <div class="warn-note">3 кола і 1 ромб (кут "низ-право") — ромб однозначно задає орієнтацію, тому перебір гіпотез повороту більше не потрібен. Наведи схему в пунктирну рамку. Синя заливка — знайдена гомографія. Червоні цятки — розпізнані "1", лишаються до нового сканування.</div>
     <div class="cam-wrap" id="camWrap">
       <div class="cam-placeholder" id="camPlaceholder">Камеру ще не увімкнено</div>
       <div class="cam-live" id="camLive">
@@ -155,27 +159,13 @@
     <label>Детальний лог</label>
     <textarea id="logBox" readonly></textarea>
     <div class="btn-row">
-      <button class="secondary" id="downloadLogBtn">Завантажити лог</button>
+      <button class="secondary" id="copyLogBtn">Скопіювати лог</button>
       <button class="secondary" id="clearLogBtn">Очистити лог</button>
     </div>
   </div>
 </div>
 
 <script>
-function downloadLog() {
-  const box = document.getElementById('logBox');
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const blob = new Blob([box.value], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `log_${timestamp}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
 function log(msg) {
   const box = document.getElementById('logBox');
   const time = new Date().toLocaleTimeString();
@@ -214,6 +204,23 @@ function encodePhrase(phrase) {
   return { bits, charCount: clean.length };
 }
 
+/* АВТО-РОЗМІР СЕКТОРА: раніше Q обирався вручну повзунком, і при
+   довшій фразі, ніж влазить у поточний Q, дані просто обрізались
+   мовчки. Тепер Q рахується напряму від довжини фрази — мінімальний
+   Q, чий сектор (Q×Q біт) вміщає всі біти повідомлення. CELL лишається
+   фіксованим (див. computeCanvasSize) — зростає САМЕ полотно, а не
+   стискається клітинка, тому щільність деталі на клітинку не падає
+   зі зростанням фрази. MAX_Q — стеля: довші фрази обрізаються з
+   попередженням в лозі та в capacityNote, а не ростуть нескінченно. */
+const MIN_Q = 4;
+const MAX_Q = 24;
+function computeAutoQ(phrase) {
+  const { bits } = encodePhrase(phrase);
+  let q = MIN_Q;
+  while (q * q < bits.length && q < MAX_Q) q++;
+  return q;
+}
+
 const CELL = 20;
 
 function createStitchStamp(color) {
@@ -231,7 +238,7 @@ function createStitchStamp(color) {
 const RED_STAMP = createStitchStamp('#9e2b2b');
 
 /* ================================================================
-   АСИМЕТРИЧНІ ЯКОРІ: 3 РОМБИ + 1 КОЛО.
+   АСИМЕТРИЧНІ ЯКОРІ: 3 КОЛА + 1 РОМБ.
    Раніше всі 4 якорі були однаковими суцільними кружечками — форма
    квадрата ідеально симетрична, тому декодер не міг визначити, який
    фізичний кут відповідає якому логічному (TL/TR/BR/BL), і мусив
@@ -241,17 +248,26 @@ const RED_STAMP = createStitchStamp('#9e2b2b');
    звідси "мерехтіння" зчитаного тексту між кадрами.
 
    Тепер ОДИН з чотирьох якорів (позиція BR — "низ-право") має форму
-   КОЛА, а решта три лишаються РОМБАМИ. Це такий самий принцип, що й
-   у QR-кодів (3 з 4 кутів мають finder pattern, четвертий — ні):
-   форма, а не розмір чи статистика, однозначно каже "починай звідси".
-   Заповненість bounding box (fillRatio) — стійка до масштабу й
-   розмиття метрика форми:
+   РОМБА, а решта три лишаються КОЛАМИ (навмисно обрано саме так, а не
+   навпаки — 3 однакові кола симетричніші й естетичніші на вигляд, ніж
+   3 ромби, а єдиний ромб унизу читається як акцент композиції, а не
+   як зайва деталь). Це той самий принцип, що й у QR-кодів (3 з 4
+   кутів мають finder pattern, четвертий — ні): форма, а не розмір чи
+   статистика, однозначно каже "починай звідси". Заповненість bounding
+   box (fillRatio) — стійка до масштабу й розмиття метрика форми:
      - коло вписане в свій bbox:   π/4 ≈ 0.785
      - ромб (повернутий квадрат):        0.5
    Різниця майже вдвічі, тому проста порогова класифікація безпечна
    навіть на розмитих/маленьких кадрах.
+
+   КОЛІР: якорі та рамка мають той самий колір, що й хрестики даних
+   (#9e2b2b) — не чорний. Детекція йде по ЯСКРАВОСТІ (luminance), не
+   по кольору, а #9e2b2b (яскравість ≈77) усе одно набагато темніший
+   за білий фон (255), тож поріг DARK_THRESHOLD_RATIO спрацьовує так
+   само надійно.
    ================================================================ */
 const ANCHOR_RADIUS = CELL * 0.95;
+const ANCHOR_COLOR = '#9e2b2b'; // той самий колір, що й RED_STAMP нижче
 
 /* УВАГА, тонкий момент: весь drawPattern малюється всередині
    ctx.rotate((45 + rotDeg) * Math.PI/180) — саме цей глобальний
@@ -270,21 +286,26 @@ const ANCHOR_RADIUS = CELL * 0.95;
    нижче. Коло ж не залежить від жодних поворотів. */
 function drawAnchorDiamond(ctx, cx, cy) {
   const r = ANCHOR_RADIUS;
-  ctx.fillStyle = '#141414';
+  ctx.fillStyle = ANCHOR_COLOR;
   ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
 }
 function drawAnchorCircle(ctx, cx, cy) {
-  ctx.fillStyle = '#141414';
+  ctx.fillStyle = ANCHOR_COLOR;
   ctx.beginPath();
   ctx.arc(cx, cy, ANCHOR_RADIUS, 0, Math.PI * 2);
   ctx.fill();
 }
 
+// додаткова чисто-біла "тиха зона" ЗОВНІ від якорів (поверх off,
+// який і так ізолює якорі від орнаменту даних) — підвищує контраст
+// межі "де закінчується мітка" для порогування на кадрі з камери
+const QUIET_ZONE = CELL;
+
 function computeCanvasSize(Q) {
   const squareSize = 2 * Q * CELL;
   const gap = CELL;
   const off = gap + CELL / 2;
-  const outerPad = off + CELL;
+  const outerPad = off + CELL + QUIET_ZONE;
   const fullExtent = squareSize + 2 * outerPad;
   return Math.ceil(fullExtent * Math.SQRT2) + 20;
 }
@@ -305,20 +326,14 @@ function buildProximityOrder(Q) {
   return order;
 }
 
-function getQ() {
-  const el = document.getElementById('phraseInput');
-  if (!el) return 4;
-  const { bits } = encodePhrase(el.value);
-  return Math.max(4, Math.ceil(Math.sqrt(bits.length)));
-}
-
-function updateCapacityNote() {
-  const el = document.getElementById('capacityNote');
-  if (!el) return;
-  const Q = getQ();
+function updateCapacityNote(Q, bitsLen, truncated) {
+  document.getElementById('qSizeVal').textContent = `${Q}×${Q}`;
   const capacity = Q * Q;
   const maxChars = Math.floor(capacity / 6);
-  el.textContent = `Авто-Q = ${Q}×${Q} = ${capacity} біт → максимум ~${maxChars} символів (повторюється в 4 секторах)`;
+  const note = document.getElementById('capacityNote');
+  note.textContent = truncated
+    ? `⚠ Фраза завелика: ${bitsLen} біт не влазить у стелю MAX_Q=${MAX_Q} (макс. ${maxChars} символів) — обрізано.`
+    : `Авто-Q=${Q}: сектор ${Q}×${Q} = ${capacity} біт, максимум ~${maxChars} символів на унікальний блок (повторюється в 4 секторах).`;
 }
 
 function getQuadRotationMap() {
@@ -336,14 +351,6 @@ function rotateIndex(rx, ry, Q, qIdx) {
   return { x, y };
 }
 
-function drawFabricWeave(ctx, x0, y0, size, step) {
-  ctx.save();
-  ctx.strokeStyle = 'rgba(120,100,70,0.12)';
-  ctx.lineWidth = 0.5;
-  for (let x = x0; x <= x0 + size; x += step) { ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + size); ctx.stroke(); }
-  for (let y = y0; y <= y0 + size; y += step) { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x0 + size, y); ctx.stroke(); }
-  ctx.restore();
-}
 function drawCrossStitch(ctx, cx, cy, stamp) { ctx.drawImage(stamp, cx - CELL / 2, cy - CELL / 2); }
 
 /* ЄДИНЕ ДЖЕРЕЛО ПРАВДИ для позицій 4 кутових якорів у ЛОКАЛЬНІЙ (до
@@ -373,17 +380,16 @@ function drawPattern(ctx, W, H, Q, dataBits, rotDeg, quadMap) {
   ctx.translate(-squareSize / 2, -squareSize / 2);
   const gap = CELL;
   const off = gap + CELL / 2;
-  const outerPad = off + CELL;
-  ctx.fillStyle = '#f2e9d8';
+  const outerPad = off + CELL + QUIET_ZONE;
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(-outerPad, -outerPad, squareSize + outerPad * 2, squareSize + outerPad * 2);
-  drawFabricWeave(ctx, -outerPad, -outerPad, squareSize + outerPad * 2, CELL * 0.5);
 
   const corners = getLocalCorners(Q);
-  // BR — унікальний маркер-коло, решта три кути — ромби
-  drawAnchorDiamond(ctx, corners.TL.x, corners.TL.y);
-  drawAnchorDiamond(ctx, corners.TR.x, corners.TR.y);
-  drawAnchorCircle(ctx, corners.BR.x, corners.BR.y);
-  drawAnchorDiamond(ctx, corners.BL.x, corners.BL.y);
+  // BR — унікальний маркер-ромб, решта три кути — кола
+  drawAnchorCircle(ctx, corners.TL.x, corners.TL.y);
+  drawAnchorCircle(ctx, corners.TR.x, corners.TR.y);
+  drawAnchorDiamond(ctx, corners.BR.x, corners.BR.y);
+  drawAnchorCircle(ctx, corners.BL.x, corners.BL.y);
 
   for (let qy = 0; qy < 2; qy++) {
     for (let qx = 0; qx < 2; qx++) {
@@ -409,7 +415,7 @@ function escapeHtml(s) {
 
 function generateSchema() {
   const phrase = document.getElementById('phraseInput').value;
-  const Q = getQ();
+  const Q = computeAutoQ(phrase);
   const quadMap = getQuadRotationMap();
   const { bits, charCount } = encodePhrase(phrase);
   const capacity = Q * Q;
@@ -424,8 +430,9 @@ function generateSchema() {
   const cctx = cleanCanvas.getContext('2d');
   drawPattern(cctx, cleanCanvas.width, cleanCanvas.height, Q, groundTruth, 0, quadMap);
 
-  log(`Схема перемальована: фраза="${phrase}" (${charCount} символів, ${bits.length} біт), Q=${Q}, місткість сектора=${capacity} біт.`);
-  updateCapacityNote();
+  const truncated = bits.length > capacity;
+  log(`Схема перемальована: фраза="${phrase}" (${charCount} символів, ${bits.length} біт), авто-Q=${Q}, місткість сектора=${capacity} біт${truncated ? ' — УВАГА: фраза обрізана, не влазить навіть у MAX_Q' : ''}.`);
+  updateCapacityNote(Q, bits.length, truncated);
 }
 
 /* Повноекранний режим: та сама схема, той самий drawPattern, просто на
@@ -435,7 +442,7 @@ function generateSchema() {
    інтерфейсу теж потрапляють у кадр і додають зайвий контрастний шум. */
 function openFullscreenSchema() {
   const phrase = document.getElementById('phraseInput').value;
-  const Q = getQ();
+  const Q = computeAutoQ(phrase);
   const quadMap = getQuadRotationMap();
   const { bits } = encodePhrase(phrase);
   const capacity = Q * Q;
@@ -619,7 +626,7 @@ function findDarkBlobs(imgData, W, H, step, threshold, searchBounds) {
     }
   }
   if (rejectedCapped || rejectedTooBig || rejectedShape) {
-    console.debug(`Блоб-фільтр: відхилено ${rejectedCapped} "безмежних", ${rejectedTooBig} завеликих, ${rejectedShape} неокруглих плям.`);
+    log(`Блоб-фільтр: відхилено ${rejectedCapped} "безмежних", ${rejectedTooBig} завеликих, ${rejectedShape} неокруглих плям.`);
   }
   return blobs;
 }
@@ -677,7 +684,7 @@ function sampleFromHomography(imgData, W, H, Q, quadMap, transform, corners) {
 
      Замість статистики по самих даних беремо ДВІ ГАРАНТОВАНІ КОНТРОЛЬНІ
      ТОЧКИ, чий колір відомий наперед незалежно від вмісту повідомлення:
-       - "fg" (темна): сам якір-коло (corners.BR) — завжди суцільно
+       - "fg" (темна): сам якір-ромб (corners.BR) — завжди суцільно
          темний, це фіксована частина схеми, а не дані;
        - "bg" (світла): точка в гарантовано порожній зоні між краєм
          даних і якорями — структура схеми це гарантує (відступ "off"),
@@ -798,20 +805,20 @@ function quadShapeOk(ordered, maxDiagPx, expected, frameCenter, maxCenterDeviati
   return true;
 }
 
-/* Перебирає четвірки "1 коло + 3 ромби" серед пулу кандидатів — не всі
+/* Перебирає четвірки "1 ромб + 3 кола" серед пулу кандидатів — не всі
    4-комбінації підряд (як раніше), а лише ті, де рівно одна точка має
-   форму "коло" (унікальний орієнтаційний маркер). Це відсікає одразу
+   форму "ромб" (унікальний орієнтаційний маркер). Це відсікає одразу
    й комбінаторний вибух, і саму причину потреби перебирати напрямок
-   старту: коло однозначно позначає позицію BR. */
+   старту: ромб однозначно позначає позицію BR. */
 function findPlausibleQuads(candidates, maxDiagPx, expected, frameCenter, maxCenterDeviationPx) {
   const circles = candidates.filter(c => c.shape === 'circle');
   const diamonds = candidates.filter(c => c.shape === 'diamond');
   const quads = [];
-  for (const circle of circles) {
-    for (let i0 = 0; i0 < diamonds.length; i0++)
-      for (let i1 = i0 + 1; i1 < diamonds.length; i1++)
-        for (let i2 = i1 + 1; i2 < diamonds.length; i2++) {
-          const pts = [circle, diamonds[i0], diamonds[i1], diamonds[i2]];
+  for (const diamond of diamonds) {
+    for (let i0 = 0; i0 < circles.length; i0++)
+      for (let i1 = i0 + 1; i1 < circles.length; i1++)
+        for (let i2 = i1 + 1; i2 < circles.length; i2++) {
+          const pts = [diamond, circles[i0], circles[i1], circles[i2]];
           const ordered = cyclicOrderIfConvex(pts);
           if (!ordered) continue;
           if (!quadShapeOk(ordered, maxDiagPx, expected, frameCenter, maxCenterDeviationPx)) continue;
@@ -823,10 +830,12 @@ function findPlausibleQuads(candidates, maxDiagPx, expected, frameCenter, maxCen
 
 // топ-N кіл і топ-N ромбів за розміром, серед яких перебираємо четвірки.
 // Кола і ромби беруться з ПОВНОГО списку блобів окремо (а не з єдиного
-// top-10 за розміром), інакше кола ризикують не потрапити в пул, якщо
-// в кадрі багато шумних плям, що випадково більші за справжнє коло.
-const CANDIDATE_POOL_SIZE_CIRCLES = 5;
-const CANDIDATE_POOL_SIZE_DIAMONDS = 10;
+// top-10 за розміром), інакше ромб ризикує не потрапити в пул, якщо
+// в кадрі багато шумних плям, що випадково більші за справжній ромб.
+// Тепер УНІКАЛЬНА форма — ромб (лише 1 потрібен, вузький пул досить),
+// а кіл потрібно 3 з чотирьох — пул для них ширший.
+const CANDIDATE_POOL_SIZE_CIRCLES = 10;
+const CANDIDATE_POOL_SIZE_DIAMONDS = 5;
 
 function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity, activeCount) {
   const threshold = computeAdaptiveDarkThreshold(imgData);
@@ -842,9 +851,9 @@ function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity
   const diamondCandidates = blobs.filter(b => b.shape === 'diamond').slice(0, CANDIDATE_POOL_SIZE_DIAMONDS);
   const candidates = circleCandidates.concat(diamondCandidates);
 
-  if (circleCandidates.length === 0) {
+  if (diamondCandidates.length === 0) {
     trackingMiss();
-    return { ok: false, reason: `${blobs.length} плям, серед них нема кола-орієнтира`, blobCount: blobs.length };
+    return { ok: false, reason: `${blobs.length} плям, серед них нема ромба-орієнтира`, blobCount: blobs.length };
   }
 
   const maxDiagPx = Math.min(W, H) * 0.98;
@@ -861,20 +870,20 @@ function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity
   }
 
   const corners = getLocalCorners(Q);
-  const srcCyclic = [corners.TL, corners.TR, corners.BR, corners.BL]; // BR = позиція кола-орієнтира
+  const srcCyclic = [corners.TL, corners.TR, corners.BR, corners.BL]; // BR = позиція ромба-орієнтира
 
   /* Раніше тут перебирались усі 8 гіпотез відповідності (4 зсуви
      старту × 2 напрямки обходу), бо форма якорів була симетричною і
-     жодна гіпотеза не мала апріорної переваги. Тепер коло однозначно
+     жодна гіпотеза не мала апріорної переваги. Тепер ромб однозначно
      задає, яка точка — BR: лишається перевірити лише НАПРЯМОК обходу
      (2 варіанти) — фото може бути дзеркальним відносно намальованої
      схеми (наприклад, якщо тестуєш фронтальною камерою). */
   let best = null;
   for (const ordered of quads) {
     for (const variant of [ordered, ordered.slice().reverse()]) {
-      const circleIdx = variant.findIndex(p => p.shape === 'circle');
-      if (circleIdx === -1) continue; // підстраховка, не мало б статись
-      const shift = (circleIdx - 2 + 4) % 4; // ротуємо, щоб коло стало на позицію BR (індекс 2)
+      const diamondIdx = variant.findIndex(p => p.shape === 'diamond');
+      if (diamondIdx === -1) continue; // підстраховка, не мало б статись
+      const shift = (diamondIdx - 2 + 4) % 4; // ротуємо, щоб ромб став на позицію BR (індекс 2)
       const dstCyclic = [0, 1, 2, 3].map(i => variant[(i + shift) % 4]);
       const transform = solveHomography(srcCyclic, dstCyclic);
       const sampled = sampleFromHomography(imgData, W, H, Q, quadMap, transform, corners);
@@ -885,7 +894,7 @@ function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity
 
   if (!best) {
     trackingMiss();
-    return { ok: false, reason: `${quads.length} квадратів, жоден не дав коло на позиції BR`, blobCount: blobs.length };
+    return { ok: false, reason: `${quads.length} квадратів, жоден не дав ромб на позиції BR`, blobCount: blobs.length };
   }
 
   const bestSides = [dist(best.dstCyclic[0],best.dstCyclic[1]), dist(best.dstCyclic[1],best.dstCyclic[2]), dist(best.dstCyclic[2],best.dstCyclic[3]), dist(best.dstCyclic[3],best.dstCyclic[0])];
@@ -1029,7 +1038,7 @@ function drawLiveOverlay(W, H, det, statusText) {
     for (let i = 1; i < 4; i++) octx.lineTo(pts[i].x, pts[i].y);
     octx.closePath();
     octx.stroke();
-    // коло-орієнтир (позиція BR = індекс 2) виділяємо окремим кольором,
+    // ромб-орієнтир (позиція BR = індекс 2) виділяємо окремим кольором,
     // щоб на екрані було видно, що саме розпізнано як орієнтир
     octx.fillStyle = 'rgba(255,200,80,0.9)';
     for (let i = 0; i < pts.length; i++) {
@@ -1065,7 +1074,7 @@ function drawDecodedOverlay(W, H, Q, quadMap, det) {
   octx.lineWidth = 2;
   octx.stroke();
 
-  // самі якорі — жовті кружечки поверх заливки; коло-орієнтир (BR,
+  // самі якорі — жовті кружечки поверх заливки; ромб-орієнтир (BR,
   // індекс 2) трохи більше за розміром, щоб було видно на око
   octx.fillStyle = 'rgba(255,200,80,0.95)';
   for (let i = 0; i < dstCyclic.length; i++) {
@@ -1118,9 +1127,9 @@ function scanFrame() {
   }
   const imgData = ctx.getImageData(0, 0, size, size);
 
-  const Q = getQ();
-  const quadMap = getQuadRotationMap();
   const phrase = document.getElementById('phraseInput').value;
+  const Q = computeAutoQ(phrase);
+  const quadMap = getQuadRotationMap();
   const { bits, charCount } = encodePhrase(phrase);
   const capacity = Q * Q;
   const order = buildProximityOrder(Q);
@@ -1195,7 +1204,7 @@ function finishDecode(W, H, Q, quadMap, order, groundTruth, capacity, activeCoun
     }
 
     let html = '';
-    html += `<div style="margin-bottom:8px;color:rgba(255,255,255,0.6)">Автознайдено (коло + 3 ромби + гомографія) — очікувана фраза: "${escapeHtml(phrase)}" (узгодженість ${(det.best.agreement*100).toFixed(1)}%)</div>`;
+    html += `<div style="margin-bottom:8px;color:rgba(255,255,255,0.6)">Автознайдено (3 кола + 1 ромб + гомографія) — очікувана фраза: "${escapeHtml(phrase)}" (узгодженість ${(det.best.agreement*100).toFixed(1)}%)</div>`;
     for (let q = 0; q < 4; q++) {
       const acc = accuracy(det.best.sampled.results[q]);
       const text = bitsToPhrase(det.best.sampled.results[q]);
@@ -1207,7 +1216,7 @@ function finishDecode(W, H, Q, quadMap, order, groundTruth, capacity, activeCoun
     html += `<div class="final-result"><div class="label">Голосування більшості (${votedAcc}% точності)</div>"${escapeHtml(votedText)}"</div>`;
     html += `<button class="secondary" style="margin-top:10px" onclick="rescan()">Сканувати ще раз</button>`;
     document.getElementById('camResultsBox').innerHTML = html;
-    document.getElementById('camStatus').textContent = 'Декодовано. Синя зона, жовті якорі (велика цятка — коло-орієнтир), червоні цятки — що бачив алгоритм.';
+    document.getElementById('camStatus').textContent = 'Декодовано. Синя зона, жовті якорі (велика цятка — ромб-орієнтир), червоні цятки — що бачив алгоритм.';
     log(`Голосування: точність=${votedAcc}%, текст="${votedText}". --- ЗАВЕРШЕНО ---`);
   } catch (e) {
     log(`ПОМИЛКА фіналізації: ${e.name}: ${e.message}`);
@@ -1227,6 +1236,11 @@ function rescan() {
 }
 window.rescan = rescan;
 
+function copyLogFn() {
+  const box = document.getElementById('logBox');
+  box.select();
+  navigator.clipboard.writeText(box.value).catch(() => { document.execCommand('copy'); });
+}
 function clearLogFn() { document.getElementById('logBox').value = ''; log('Лог очищено.'); }
 
 document.getElementById('phraseInput').addEventListener('input', generateSchema);
@@ -1235,12 +1249,12 @@ document.getElementById('phraseInput').addEventListener('input', generateSchema)
 });
 document.getElementById('genSchemaBtn').addEventListener('click', generateSchema);
 document.getElementById('camToggleBtn').addEventListener('click', toggleCamera);
-document.getElementById('downloadLogBtn').addEventListener('click', downloadLog);
+document.getElementById('copyLogBtn').addEventListener('click', copyLogFn);
 document.getElementById('clearLogBtn').addEventListener('click', clearLogFn);
 
 updateCapacityNote();
 generateSchema();
-log('Ініціалізація завершена (коло + 3 ромби, асиметричні якорі). Готово до тесту.');
+log('Ініціалізація завершена (3 кола + 1 ромб, асиметричні якорі, авто-Q, білий фон, якорі кольору хрестика). Готово до тесту.');
 </script>
 </body>
-</html>
+ </html>
