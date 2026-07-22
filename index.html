@@ -3,7 +3,59 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ромб-вишиванка — 4 кутові якорі + гомографія</title>
+<title>Ромб-вишиванка — маяки-квітки + Х-лінія, OpenCV</title>
+<script>
+window.__preLog = [];
+window.__openCvLoadState = 'pending';
+function earlyLog(msg) {
+  window.__preLog.push(msg);
+  try { console.log('[opencv-boot] ' + msg); } catch (e) {}
+}
+(function () {
+  try {
+    const resolvedUrl = new URL('opencv.js', document.baseURI).href;
+    earlyLog('Спроба завантажити opencv.js за адресою: ' + resolvedUrl);
+  } catch (e) {
+    earlyLog('Не вдалося обчислити абсолютний шлях до opencv.js: ' + e.message);
+  }
+})();
+function onOpenCvScriptError(ev) {
+  window.__openCvLoadState = 'script-error';
+  earlyLog('ПОМИЛКА: тег <script src="opencv.js"> не завантажився (onerror).');
+  if (window.__cvErrorCallback) window.__cvErrorCallback();
+}
+function onOpenCvScriptLoaded() {
+  window.__openCvLoadState = 'script-loaded';
+  earlyLog('Тег <script src="opencv.js"> відпрацював (onload). Перевіряю глобальний cv...');
+  if (typeof cv === 'undefined') {
+    window.__openCvLoadState = 'cv-undefined';
+    earlyLog('ПОМИЛКА: глобальна змінна cv не визначена.');
+    if (window.__cvErrorCallback) window.__cvErrorCallback();
+    return;
+  }
+  if (cv && typeof cv.then === 'function') {
+    earlyLog('cv є Promise (MODULARIZE-збірка) — чекаю резолву WASM runtime...');
+    cv.then(function (resolvedCv) {
+      window.cv = resolvedCv;
+      window.__openCvLoadState = 'ready';
+      earlyLog('cv Promise резолвнувся — WASM runtime готовий.');
+      if (window.__cvReadyCallback) window.__cvReadyCallback();
+    }).catch(function (err) {
+      window.__openCvLoadState = 'promise-rejected';
+      earlyLog('ПОМИЛКА: cv Promise відхилено: ' + (err && err.message ? err.message : String(err)));
+      if (window.__cvErrorCallback) window.__cvErrorCallback();
+    });
+  } else {
+    earlyLog('cv — не Promise (класична збірка) — підключаю onRuntimeInitialized...');
+    cv['onRuntimeInitialized'] = function () {
+      window.__openCvLoadState = 'ready';
+      earlyLog('onRuntimeInitialized спрацював — WASM runtime готовий.');
+      if (window.__cvReadyCallback) window.__cvReadyCallback();
+    };
+  }
+}
+</script>
+<script async src="opencv.js" onload="onOpenCvScriptLoaded();" onerror="onOpenCvScriptError(event);" type="text/javascript"></script>
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; background: #ffffff; color: #16222c; font-family: sans-serif; padding: 20px 12px 60px; }
@@ -44,6 +96,26 @@
   .btn-row button { margin-top: 0; }
   textarea { width: 100%; height: 240px; font-family: monospace; font-size: 11px; background: #ffffff; color: #16222c; border: 1px solid rgba(0,0,0,0.2); border-radius: 6px; padding: 8px; resize: vertical; }
 
+  /* Приціл-хрестик у центрі кадру камери. Той самий принцип, що вже
+     працює в кільцевому шифрі: рамка з пунктиру показує користувачу,
+     куди саме треба навести схему, і одночасно чесно відповідає межі
+     MAX_CENTER_DEVIATION_PX нижче в JS — це не просто декорація, а
+     буквальна візуалізація зони, у якій алгоритм реально шукає. */
+  #centerGuide {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 62%;
+    height: 62%;
+    transform: translate(-50%, -50%);
+    border: 2px dashed rgba(255,255,255,0.55);
+    border-radius: 10px;
+    pointer-events: none;
+    z-index: 3;
+    display: none;
+  }
+  #centerGuide.active { display: block; }
+
   /* Повноекранний режим схеми — для тестування камерою НА ЕКРАНІ.
      Без цього в кадрі завжди присутня решта інтерфейсу (панелі,
      підписи, кнопки) — навіть на білому фоні це зайві контрастні межі
@@ -61,8 +133,7 @@
     justify-content: center;
   }
   #fullscreenSchema.active { display: flex; }
-  #fullscreenSchema canvas { width: auto; height: auto; max-width: none; max-height: none; }
-  #fullscreenSchema { overflow: auto; }
+  #fullscreenSchema canvas { max-width: 92vw; max-height: 80vh; width: auto; }
   #fullscreenCloseBtn {
     position: fixed; top: 16px; right: 16px; width: auto;
     padding: 10px 18px; z-index: 1001; margin: 0;
@@ -75,33 +146,13 @@
 </div>
 <button id="fullscreenCloseBtn" class="secondary" onclick="closeFullscreenSchema()" style="display:none;">Закрити</button>
 <div class="wrap">
-  <h1>Ромб-вишиванка — 4 кутові якорі</h1>
-  <div class="subtitle">Рамка = 4 суцільні кружечки в кутах, геометрія = повна гомографія (як у кільцевому шифрі)</div>
+  <h1>Ромб-вишиванка — асиметричні якорі</h1>
+  <div class="subtitle">4 однакові маяки-квітки + Х-лінія через центр, орієнтація — по синхропрефіксу</div>
 
   <div class="panel">
     <label>Фраза (укр. літери, пробіл, кома, крапка)</label>
-    <input type="text" id="phraseInput" value="я тебе кохаю" maxlength="120" />
+    <input type="text" id="phraseInput" value="я тебе кохаю" maxlength="60" />
     <div class="capacity-note" id="capacityNote"></div>
-  </div>
-
-  <div class="panel">
-    <label>Поворот кожного квадранта</label>
-    <div class="row">
-      <label>Верхній-лівий</label>
-      <select id="rotTL"><option value="0">0°</option><option value="1">90°</option><option value="2">180°</option><option value="3">270°</option></select>
-    </div>
-    <div class="row">
-      <label>Верхній-правий</label>
-      <select id="rotTR"><option value="0">0°</option><option value="1" selected>90°</option><option value="2">180°</option><option value="3">270°</option></select>
-    </div>
-    <div class="row">
-      <label>Нижній-лівий</label>
-      <select id="rotBL"><option value="0">0°</option><option value="1">90°</option><option value="2">180°</option><option value="3" selected>270°</option></select>
-    </div>
-    <div class="row">
-      <label>Нижній-правий</label>
-      <select id="rotBR"><option value="0">0°</option><option value="1">90°</option><option value="2" selected>180°</option><option value="3">270°</option></select>
-    </div>
   </div>
 
   <div class="panel">
@@ -110,22 +161,23 @@
       <canvas id="cleanCanvas" width="320" height="320"></canvas>
       <div class="canvas-label">Ось що треба вишити чи роздрукувати</div>
     </div>
-    <button id="genSchemaBtn">Перемалювати схему</button>
     <button class="secondary" id="fullscreenBtn" onclick="openFullscreenSchema()">На весь екран (для тесту камерою на екрані)</button>
   </div>
 
+
   <div class="panel">
     <label>Камера — автосканування</label>
-    <div class="warn-note">4 чорні кружечки в кутах — єдині якорі. Синя заливка — знайдена гомографія. Червоні цятки — розпізнані "1", лишаються до нового сканування.</div>
+    <div class="warn-note">4 однакові маяки-квітки (хрестики навколо порожньої середини) з'єднані Х-лінією через центр. Наведи схему в пунктирну рамку. Синя заливка — знайдений контур.</div>
     <div class="cam-wrap" id="camWrap">
-      <div class="cam-placeholder" id="camPlaceholder">Камеру ще не увімкнено</div>
+      <div class="cam-placeholder" id="camPlaceholder">OpenCV завантажується...</div>
       <div class="cam-live" id="camLive">
         <video id="camVideo" autoplay playsinline muted></video>
         <canvas id="overlayCanvas" class="overlay"></canvas>
+        <div id="centerGuide"></div>
         <div class="scan-status" id="scanStatusOverlay"></div>
       </div>
     </div>
-    <button id="camToggleBtn">Увімкнути камеру</button>
+    <button id="camToggleBtn" disabled>Завантаження OpenCV...</button>
     <div class="capacity-note" id="camStatus"></div>
   </div>
 
@@ -180,65 +232,6 @@ function encodePhrase(phrase) {
   return { bits, charCount: clean.length };
 }
 
-// ===== АВТО-РОЗМІР СЕКТОРА + ДІАГОНАЛЬНИЙ ПОДІЛ НА 2 БЛОКИ =====
-// Замість 4 однакових копій (надлишковість ×4) — 2 незалежні блоки
-// даних, кожен продубльований лише на своїй діагоналі (TL+BR = блок A,
-// TR+BL = блок B). Це надлишковість ×2 замість ×4, але й ємність на тій
-// самій площі — ×2. Розмір сектора Q рахується від довжини фрази
-// автоматично (не вручну), тому матриця не "пливе" — росте пропорційно.
-const MIN_Q = 4, MAX_Q = 16;
-
-function computeAutoQ(totalCharCount) {
-  // 2 блоки × Q² біт = 2Q² біт місткості; символ = 6 біт →
-  // maxChars = 2Q²/6 = Q²/3  =>  Q = ceil(sqrt(3 * charCount))
-  const needed = Math.ceil(Math.sqrt(3 * Math.max(1, totalCharCount)));
-  return Math.max(MIN_Q, Math.min(MAX_Q, needed));
-}
-
-/* Готує все, що потрібно і для малювання схеми, і для декодування:
-   Q, 2 незалежні бітові масиви (з проксиміті-заповненням від центру
-   назовні — той самий принцип, що був раніше для одного блоку), і
-   позначку, чи фраза довелось обрізати (не влізла навіть у MAX_Q). */
-function prepareEncoding(phrase) {
-  const clean = phrase.toLowerCase().split('').filter(ch => POLYBIUS.includes(ch));
-  let Q = computeAutoQ(clean.length);
-  const capacityPerBlock = Q * Q;
-  const maxTotalChars = Math.floor((2 * capacityPerBlock) / 6);
-
-  let truncated = false;
-  let usedChars = clean;
-  if (clean.length > maxTotalChars) {
-    usedChars = clean.slice(0, maxTotalChars);
-    truncated = true;
-  }
-
-  const half = Math.ceil(usedChars.length / 2);
-  const charsA = usedChars.slice(0, half);
-  const charsB = usedChars.slice(half);
-
-  let bitsA = [], bitsB = [];
-  charsA.forEach(ch => { bitsA = bitsA.concat(charToBits(ch)); });
-  charsB.forEach(ch => { bitsB = bitsB.concat(charToBits(ch)); });
-
-  const order = buildProximityOrder(Q); // та сама форма заповнення для обох блоків
-
-  function fillBlock(bitsArr) {
-    const activeCount = Math.min(bitsArr.length, capacityPerBlock);
-    const groundTruth = new Array(capacityPerBlock).fill(0);
-    for (let k = 0; k < activeCount; k++) groundTruth[order[k]] = bitsArr[k];
-    return { groundTruth, activeCount };
-  }
-  const A = fillBlock(bitsA);
-  const B = fillBlock(bitsB);
-
-  return {
-    Q, capacityPerBlock, order, truncated,
-    totalCharCount: usedChars.length, charCountA: charsA.length, charCountB: charsB.length,
-    groundTruthA: A.groundTruth, activeCountA: A.activeCount,
-    groundTruthB: B.groundTruth, activeCountB: B.activeCount
-  };
-}
-
 const CELL = 20;
 
 function createStitchStamp(color) {
@@ -255,28 +248,78 @@ function createStitchStamp(color) {
 }
 const RED_STAMP = createStitchStamp('#9e2b2b');
 
-/* Якорі тепер НЕ тонкі хрестики, а СУЦІЛЬНІ круглі плями — набагато
-   більша площа темного на тому ж фізичному місці, тому при пошуку плям
-   вони завжди опиняться серед найбільших за розміром, незалежно від
-   освітлення чи кольору нитки/друку. Радіус — свідомо великий відносно
-   CELL, щоб залишався надійно розпізнаваним навіть здалеку. */
-const ANCHOR_RADIUS = CELL * 0.95;
-function drawAnchorDot(ctx, cx, cy) {
-  ctx.fillStyle = '#141414';
+/* ================================================================
+   МАЯКИ-"КВІТКИ" + Х-ЛІНІЯ ЧЕРЕЗ ЦЕНТР.
+   Раніше якорі були окремими суцільними фігурами (ромб/коло) — це
+   виглядало "цифровим" на тлі решти орнаменту, зробленого суцільно
+   хрестиками. Тепер усі 4 якорі — це той самий стібок RED_STAMP,
+   розставлений 3×3 навколо центру З ПОРОЖНЬОЮ серединою (дірка) —
+   FLOWER_HOLE_CELLS нижче. Топологічно дірка серед суцільного кільця
+   стібків — це саме та структура (контур із дірою), яку OpenCV шукає
+   через ієрархію cv.findContours(RETR_TREE): дитячий контур усередині
+   батьківського.
+
+   Щоб усі 4 маяки й хрестова лінія між ними стали ОДНИМ великим
+   контуром (а не 4 окремими плямами), лінія хрестиків з'єднує їх по
+   діагоналях ТЛ-центр-БР і ТП-центр-БЛ — рівно ті самі 2 діагоналі
+   локального квадрата, що після зовнішнього ctx.rotate(45°) стають
+   прямим "+" на екрані. detectAndDecode тоді шукає НАЙБІЛЬШИЙ контур
+   кадру і бере його 4 дитячі дірки — це і є 4 точки якорів, без
+   потреби класифікувати форму (ромб/коло) чи розмір окремо.
+
+   Оскільки лінія тепер фізично проходить через дані, клітинки БІЛЯ
+   лінії назавжди виключені з кодування (DIAG_QUIET_HALF нижче) —
+   інакше дані злилися б з лінією в один контур і зіпсували б
+   ієрархію. Це робиться в buildProximityOrder, а не тут: тут лінія
+   лише МАЛЮЄТЬСЯ, рішення "яких клітинок нема серед даних" — там. */
+const FLOWER_HOLE_CELLS = 1; // радіус "квітки" в клітинках навколо порожнього центру (3×3)
+const DIAG_QUIET_HALF = 1;   // тиха зона: сама лінія (rx==ry) + по 1 клітинці з кожного боку = смуга 3 клітинки
+const SYNC_BITS = [1, 0, 1]; // короткий орієнтаційний префікс на старті кожного сектора (замість форми маяка)
+
+function drawFlowerAnchor(ctx, cx, cy) {
+  for (let dx = -FLOWER_HOLE_CELLS; dx <= FLOWER_HOLE_CELLS; dx++) {
+    for (let dy = -FLOWER_HOLE_CELLS; dy <= FLOWER_HOLE_CELLS; dy++) {
+      if (dx === 0 && dy === 0) continue; // порожня середина — майбутня "дірка" для findContours
+      drawCrossStitch(ctx, cx + dx * CELL, cy + dy * CELL, RED_STAMP);
+    }
+  }
+}
+
+/* Місток через тиху зону "off" між краєм даних і центром маяка —
+   пряма лінія тим самим кольором/товщиною, що й стібки, аби весь
+   контур (маяк + хрест + місток) лишався одним зв'язним цілим навіть
+   там, де немає рівно вирівняних по CELL клітинок. */
+function drawBridge(ctx, x0, y0, x1, y1) {
+  ctx.save();
+  ctx.strokeStyle = '#9e2b2b';
+  ctx.lineWidth = CELL * 0.32;
+  ctx.lineCap = 'square';
   ctx.beginPath();
-  ctx.arc(cx, cy, ANCHOR_RADIUS, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function computeCanvasSize(Q) {
   const squareSize = 2 * Q * CELL;
   const gap = CELL;
   const off = gap + CELL / 2;
-  const outerPad = off + CELL;
+  // "квітка" виступає на FLOWER_HOLE_CELLS клітинок від центру, плюс
+  // трохи запасу на сам стібок — тому запас більший, ніж був для
+  // компактного суцільного якоря (той вкладався в один зайвий CELL).
+  const outerPad = off + CELL * (FLOWER_HOLE_CELLS + 0.6);
   const fullExtent = squareSize + 2 * outerPad;
   return Math.ceil(fullExtent * Math.SQRT2) + 20;
 }
 
+/* Тиха зона по діагоналі rx==ry виключається з ЛОГІЧНОГО порядку
+   заповнення бітами. Через фіксовану ротацію квадрантів (quadMap:
+   TL=0°, TR=90°, BL=270°, BR=180°) ця сама логічна умова після
+   повороту на 90°/270° коректно перетворюється на фізичну АНТИдіагональ
+   у квадрантах TR/BL — тобто винятку в ЛОГІЧНИХ координатах досить,
+   щоб тиха зона лягла на СПРАВЖНЮ Х-лінію фізично в усіх 4 квадрантах
+   одразу, без окремого розрахунку для кожного quadMap-повороту. */
 function buildProximityOrder(Q) {
   const order = [];
   const maxD = 2 * (Q - 1);
@@ -287,30 +330,67 @@ function buildProximityOrder(Q) {
       const b = d - a;
       const x = Q - 1 - a;
       const y = Q - 1 - b;
+      if (Math.abs(x - y) <= DIAG_QUIET_HALF) continue; // тиха зона Х-лінії
       order.push(y * Q + x);
     }
   }
   return order;
 }
 
-function updateCapacityNote() {
-  const phrase = document.getElementById('phraseInput').value;
-  const enc = prepareEncoding(phrase);
-  const totalCapacity = 2 * enc.capacityPerBlock;
-  const maxChars = Math.floor(totalCapacity / 6);
-  let msg = `Сектор ${enc.Q}×${enc.Q} (авто) × 2 діагональні блоки = ${totalCapacity} біт → максимум ~${maxChars} символів. Використано: ${enc.totalCharCount}/${maxChars}.`;
-  if (enc.truncated) msg += ` Фразу обрізано — влізло лише ${enc.totalCharCount} символів.`;
-  document.getElementById('capacityNote').textContent = msg;
-  return enc;
+/* Автовибір розміру сектора Q від довжини фрази — раніше користувач
+   сам крутив повзунок, тепер Q рахується напряму з кількості бітів
+   повідомлення. Мінімальне Q потрібне, щоб capacity=Q×Q не була меншою
+   за requiredBits — беремо стелю кореня, потім затискаємо в розумні
+   межі: Q_MIN, щоб клітинки не були мікроскопічними навіть для
+   короткого тексту, Q_MAX — практична межа розпізнаваності камерою
+   (більші сектори = дрібніші клітинки на тому ж фізичному розмірі
+   схеми). Тиха зона між якорями й даними (gap/off у getLocalCorners)
+   визначається виключно через CELL і жодним чином не залежить від Q,
+   тож вона лишається незмінною для будь-якого автообраного розміру. */
+const Q_MIN = 4;
+const Q_MAX = 16;
+/* Раніше Q рахувався наближено через sqrt(neededBits) — це було вірно,
+   доки capacity=Q×Q без винятків. Тепер частина клітинок завжди йде
+   під тиху зону Х-лінії (buildProximityOrder її вже виключає), тож
+   наближена формула недооцінювала б Q. Перебираємо Q_MIN..Q_MAX
+   напряму й рахуємо РЕАЛЬНУ місткість buildProximityOrder(Q).length
+   мінус SYNC_BITS — цикл максимум 13 ітерацій по Q≤256 клітинок,
+   не варто економити тут на приблизних формулах. */
+function usableCapacityFor(Q) {
+  return buildProximityOrder(Q).length - SYNC_BITS.length;
+}
+function computeAutoQ(phrase) {
+  const { bits } = encodePhrase(phrase);
+  const neededBits = Math.max(bits.length, 1);
+  for (let q = Q_MIN; q <= Q_MAX; q++) {
+    if (usableCapacityFor(q) >= neededBits) return q;
+  }
+  return Q_MAX;
 }
 
+function updateCapacityNote() {
+  const phrase = document.getElementById('phraseInput').value;
+  const Q = computeAutoQ(phrase);
+  const usableCapacity = usableCapacityFor(Q);
+  const maxChars = Math.floor(usableCapacity / 6);
+  const { charCount } = encodePhrase(phrase);
+  const note = document.getElementById('capacityNote');
+  const over = charCount > maxChars;
+  note.textContent = over
+    ? `Автосектор ${Q}×${Q} → ємність ${maxChars} символів (тиха зона й орієнтир вже враховані), введено ${charCount} — ${charCount - maxChars} зайвих, не влізуть!`
+    : `Автосектор ${Q}×${Q} → ємність ${maxChars} символів (тиха зона й орієнтир вже враховані), введено ${charCount} / ${maxChars}`;
+  note.style.color = over ? '#b52020' : '';
+}
+
+/* Раніше поворот кожного квадранта вибирався вручну (4 select у панелі
+   "Поворот кожного квадранта"). Панель прибрана — усі 4 квадранти
+   мають однакову функцію (просто розносять однакові дані по різних
+   орієнтаціях для 4-way голосування при декодуванні), тож для цього
+   достатньо БУДЬ-ЯКОГО фіксованого набору різних поворотів. Кодер і
+   декодер користуються ЦІЄЮ Ж функцією, тому лишаються узгодженими
+   автоматично — саму мапу міняти більше ніколи не треба. */
 function getQuadRotationMap() {
-  return {
-    '0,0': parseInt(document.getElementById('rotTL').value),
-    '1,0': parseInt(document.getElementById('rotTR').value),
-    '0,1': parseInt(document.getElementById('rotBL').value),
-    '1,1': parseInt(document.getElementById('rotBR').value)
-  };
+  return { '0,0': 0, '1,0': 1, '0,1': 3, '1,1': 2 };
 }
 
 function rotateIndex(rx, ry, Q, qIdx) {
@@ -329,12 +409,11 @@ function drawFabricWeave(ctx, x0, y0, size, step) {
 }
 function drawCrossStitch(ctx, cx, cy, stamp) { ctx.drawImage(stamp, cx - CELL / 2, cy - CELL / 2); }
 
-/* ЄДИНЕ ДЖЕРЕЛО ПРАВДИ для позицій 4 кутових якорів у ЛОКАЛЬНІЙ (до
-   глобального повороту на 45°+rotDeg) системі координат — той самий
-   принцип, що SRC_BOTTOM/TOP/LEFT/RIGHT у кільцевому шифрі. Порядок
+/* ЄДИНЕ ДЖЕРЕЛО ПРАВДИ для позицій 4 кутових маяків у ЛОКАЛЬНІЙ (до
+   глобального повороту на 45°+rotDeg) системі координат. Порядок
    TL->TR->BR->BL — за годинниковою стрілкою у стандартній canvas-системі
-   (y вниз). Використовується і при малюванні схеми, і при розпізнаванні
-   (там ці самі 4 точки — SRC для гомографії). */
+   (y вниз). Усі 4 маяки тепер однакові (квітка 3×3 без центру) —
+   орієнтацію задає SYNC_BITS при декодуванні, а не форма маяка. */
 function getLocalCorners(Q) {
   const squareSize = 2 * Q * CELL;
   const gap = CELL, off = gap + CELL / 2;
@@ -346,7 +425,7 @@ function getLocalCorners(Q) {
   };
 }
 
-function drawPattern(ctx, W, H, Q, dataBitsA, dataBitsB, rotDeg, quadMap) {
+function drawPattern(ctx, W, H, Q, dataBits, rotDeg, quadMap) {
   ctx.clearRect(0, 0, W, H);
   ctx.save();
   ctx.translate(W / 2, H / 2);
@@ -355,24 +434,42 @@ function drawPattern(ctx, W, H, Q, dataBitsA, dataBitsB, rotDeg, quadMap) {
   ctx.translate(-squareSize / 2, -squareSize / 2);
   const gap = CELL;
   const off = gap + CELL / 2;
-  const outerPad = off + CELL;
+  const outerPad = off + CELL * (FLOWER_HOLE_CELLS + 0.6);
   ctx.fillStyle = '#f2e9d8';
   ctx.fillRect(-outerPad, -outerPad, squareSize + outerPad * 2, squareSize + outerPad * 2);
   drawFabricWeave(ctx, -outerPad, -outerPad, squareSize + outerPad * 2, CELL * 0.5);
 
   const corners = getLocalCorners(Q);
-  for (const key of ['TL','TR','BR','BL']) drawAnchorDot(ctx, corners[key].x, corners[key].y);
+  drawFlowerAnchor(ctx, corners.TL.x, corners.TL.y);
+  drawFlowerAnchor(ctx, corners.TR.x, corners.TR.y);
+  drawFlowerAnchor(ctx, corners.BR.x, corners.BR.y);
+  drawFlowerAnchor(ctx, corners.BL.x, corners.BL.y);
 
-  // діагональ TL(0,0)-BR(1,1) = блок A; діагональ TR(1,0)-BL(0,1) = блок B
+  // містки через тиху зону "off" — з'єднують край даних (кути квадрата
+  // даних) із центром кожного маяка, щоб уся конструкція лишалась
+  // одним зв'язним контуром для findContours
+  drawBridge(ctx, 0, 0, corners.TL.x, corners.TL.y);
+  drawBridge(ctx, squareSize, 0, corners.TR.x, corners.TR.y);
+  drawBridge(ctx, squareSize, squareSize, corners.BR.x, corners.BR.y);
+  drawBridge(ctx, 0, squareSize, corners.BL.x, corners.BL.y);
+
   for (let qy = 0; qy < 2; qy++) {
     for (let qx = 0; qx < 2; qx++) {
       const qIdx = quadMap[qx + ',' + qy];
-      const dataBits = (qx === qy) ? dataBitsA : dataBitsB;
       for (let ry = 0; ry < Q; ry++) {
         for (let rx = 0; rx < Q; rx++) {
+          // фізична Х-лінія: у квадрантах TL/BR (qx==qy) це головна
+          // діагональ rx==ry, у квадрантах TR/BL (qx!=qy) — та сама
+          // логічна умова через фіксований quadMap-поворот стає
+          // антидіагоналлю rx+ry==Q-1 (див. коментар у
+          // buildProximityOrder). Малюється БЕЗУМОВНО, незалежно від
+          // даних — ці клітинки й так ніколи не отримують біт.
+          const onPhysDiag = (qx === qy)
+            ? Math.abs(rx - ry) <= DIAG_QUIET_HALF
+            : Math.abs(rx + ry - (Q - 1)) <= DIAG_QUIET_HALF;
           const bitIdx = rotateIndex(rx, ry, Q, qIdx);
           const bit = dataBits[bitIdx.y * Q + bitIdx.x] || 0;
-          if (!bit) continue;
+          if (!onPhysDiag && !bit) continue;
           const px = qx * Q * CELL + rx * CELL + CELL / 2;
           const py = qy * Q * CELL + ry * CELL + CELL / 2;
           drawCrossStitch(ctx, px, py, RED_STAMP);
@@ -387,18 +484,35 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* Спільна логіка розкладки бітів у groundTruth — використовується і
+   кодером (generateSchema/openFullscreenSchema), і декодером
+   (scanFrame, для звірки). Перші SYNC_BITS.length позицій order —
+   завжди фіксований орієнтаційний префікс, решта — повідомлення. */
+function buildGroundTruth(Q, order, bits) {
+  const capacity = Q * Q;
+  const usableCapacity = order.length - SYNC_BITS.length;
+  const activeCount = Math.min(bits.length, usableCapacity);
+  const groundTruth = new Array(capacity).fill(0);
+  for (let i = 0; i < SYNC_BITS.length; i++) groundTruth[order[i]] = SYNC_BITS[i];
+  for (let k = 0; k < activeCount; k++) groundTruth[order[SYNC_BITS.length + k]] = bits[k];
+  return { groundTruth, activeCount, capacity };
+}
+
 function generateSchema() {
   const phrase = document.getElementById('phraseInput').value;
+  const Q = computeAutoQ(phrase);
   const quadMap = getQuadRotationMap();
-  const enc = prepareEncoding(phrase);
+  const { bits, charCount } = encodePhrase(phrase);
+  const order = buildProximityOrder(Q);
+  const { groundTruth, activeCount, capacity } = buildGroundTruth(Q, order, bits);
 
-  const canvasSize = computeCanvasSize(enc.Q);
+  const canvasSize = computeCanvasSize(Q);
   const cleanCanvas = document.getElementById('cleanCanvas');
   cleanCanvas.width = canvasSize; cleanCanvas.height = canvasSize;
   const cctx = cleanCanvas.getContext('2d');
-  drawPattern(cctx, cleanCanvas.width, cleanCanvas.height, enc.Q, enc.groundTruthA, enc.groundTruthB, 0, quadMap);
+  drawPattern(cctx, cleanCanvas.width, cleanCanvas.height, Q, groundTruth, 0, quadMap);
 
-  log(`Схема перемальована: фраза="${phrase}" (${enc.totalCharCount} символів: A=${enc.charCountA}, B=${enc.charCountB}), Q=${enc.Q} (авто)${enc.truncated ? ', ОБРІЗАНО' : ''}.`);
+  log(`Схема перемальована: фраза="${phrase}" (${charCount} символів, ${bits.length} біт, використано ${activeCount}), Q=${Q}, місткість сектора=${capacity} біт.`);
   updateCapacityNote();
 }
 
@@ -409,14 +523,17 @@ function generateSchema() {
    інтерфейсу теж потрапляють у кадр і додають зайвий контрастний шум. */
 function openFullscreenSchema() {
   const phrase = document.getElementById('phraseInput').value;
+  const Q = computeAutoQ(phrase);
   const quadMap = getQuadRotationMap();
-  const enc = prepareEncoding(phrase);
+  const { bits } = encodePhrase(phrase);
+  const order = buildProximityOrder(Q);
+  const { groundTruth } = buildGroundTruth(Q, order, bits);
 
-  const canvasSize = computeCanvasSize(enc.Q);
+  const canvasSize = computeCanvasSize(Q);
   const fsCanvas = document.getElementById('fullscreenCanvas');
   fsCanvas.width = canvasSize; fsCanvas.height = canvasSize;
   const fctx = fsCanvas.getContext('2d');
-  drawPattern(fctx, fsCanvas.width, fsCanvas.height, enc.Q, enc.groundTruthA, enc.groundTruthB, 0, quadMap);
+  drawPattern(fctx, fsCanvas.width, fsCanvas.height, Q, groundTruth, 0, quadMap);
 
   document.getElementById('fullscreenSchema').classList.add('active');
   document.getElementById('fullscreenCloseBtn').style.display = 'block';
@@ -430,374 +547,281 @@ window.openFullscreenSchema = openFullscreenSchema;
 window.closeFullscreenSchema = closeFullscreenSchema;
 
 // =====================================================================
-// ГОМОГРАФІЯ З 4 ВІДПОВІДНОСТЕЙ ТОЧОК (DLT) — перенесено з кільцевого
-// шифру, де вже перевірено на реальній камері. Повне проєктивне
-// перетворення (8 ступенів свободи), моделює справжню перспективу —
-// на відміну від "підганяння прямокутника", яке моделювало лише
-// поворот+масштаб і ламалось під нахилом камери.
+// ПОШУК МАЯКІВ ЧЕРЕЗ ІЄРАРХІЮ КОНТУРІВ (RETR_TREE) — той самий принцип,
+// що й bullseye-маркери в Round Code, тільки замість "кільце з крапкою"
+// тут "суцільний хрест+рамка з 4 дірками". Раніше якорі шукались як
+// окремі плями, класифіковані за формою (ромб/коло). Тепер увесь
+// каркас — Х-лінія через центр + 4 квіткові маяки — одна суцільна
+// фігура, тож досить знайти НАЙБІЛЬШИЙ контур кадру і взяти його
+// дітей у ієрархії: це і є 4 дірки-маяки, без будь-якої класифікації
+// форми чи розміру окремих плям.
 // =====================================================================
-function solveLinearSystem(A, b) {
-  const n = b.length;
-  const M = A.map(row => row.slice());
-  const B = b.slice();
-  for (let col = 0; col < n; col++) {
-    let maxRow = col;
-    for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[maxRow][col])) maxRow = r;
-    [M[col], M[maxRow]] = [M[maxRow], M[col]];
-    [B[col], B[maxRow]] = [B[maxRow], B[col]];
-    const pivot = M[col][col];
-    for (let r = 0; r < n; r++) {
-      if (r === col || pivot === 0) continue;
-      const factor = M[r][col] / pivot;
-      for (let c = col; c < n; c++) M[r][c] -= factor * M[col][c];
-      B[r] -= factor * B[col];
-    }
-  }
-  return M.map((row, i) => row[i] !== 0 ? B[i] / row[i] : 0);
-}
-function solveHomography(src, dst) {
-  const A = [], b = [];
-  for (let i = 0; i < 4; i++) {
-    const { x, y } = src[i];
-    const { x: xp, y: yp } = dst[i];
-    A.push([x, y, 1, 0, 0, 0, -x * xp, -y * xp]); b.push(xp);
-    A.push([0, 0, 0, x, y, 1, -x * yp, -y * yp]); b.push(yp);
-  }
-  const h = solveLinearSystem(A, b);
-  return { h11: h[0], h12: h[1], h13: h[2], h21: h[3], h22: h[4], h23: h[5], h31: h[6], h32: h[7] };
-}
-function applyHomography(H, x, y) {
-  const w = H.h31 * x + H.h32 * y + 1;
-  return { x: (H.h11 * x + H.h12 * y + H.h13) / w, y: (H.h21 * x + H.h22 * y + H.h23) / w };
-}
+function oddify(n) { return (n % 2 === 0) ? n + 1 : n; }
+const ADAPTIVE_C = 6;
+const MIN_FRAME_AREA = 400;   // мінімальна площа найбільшого контуру, щоб вважати його каркасом, а не шумом
+const MIN_HOLE_AREA = 15;
+const MAX_HOLE_AREA = 900;
+// дірка маяка приблизно квадратна (одна клітинка CELL×CELL) — bbox
+// заповнений майже повністю; надто витягнуті чи надто розріджені
+// "дірки" — це, найімовірніше, випадкові прогалини між даними, а не
+// справжній маяк
+const HOLE_FILL_RATIO_MIN = 0.55;
+const HOLE_FILL_RATIO_MAX = 1.05;
+const HOLE_ASPECT_MAX = 1.6;
 
-// =====================================================================
-// БЛОБ-ДЕТЕКЦІЯ: шукаємо темні плями, беремо НАЙБІЛЬШІ 4 як якорі.
-// Суцільний кружечок (ANCHOR_RADIUS) дає в рази більшу площу на фото,
-// ніж тонкий хрестик даних тієї ж клітинки — тому прості 4 найбільші
-// плями майже завжди і є якорі, без потреби відрізняти їх кольором.
-// =====================================================================
-const MIN_BLOB_SIZE = 3;
-// МУСИТЬ бути помітно менше за FLOOD_CAP: якщо пляма впирається в
-// FLOOD_CAP, її справжній розмір НЕВІДОМИЙ (могла бути будь-якою
-// гігантською) — така пляма відхиляється явно (див. hitCap нижче), а
-// не порівнюється з цим порогом. MAX_BLOB_SIZE стосується лише плям,
-// чий розмір дійсно виміряний повністю.
-const MAX_BLOB_SIZE = 900;
-const FLOOD_CAP = 3000;
-const DARK_THRESHOLD_RATIO = 0.68;
-// округлість: суцільний кружечок-якір заповнює ~π/4≈0.785 площі своєї
-// bounding box. Велика безформна пляма (тінь, одяг) зазвичай суттєво
-// відхиляється від цього — використовуємо як додатковий фільтр форми.
-const MIN_FILL_RATIO = 0.55;
-const MAX_FILL_RATIO = 0.95;
-const MAX_BLOB_ASPECT = 1.8;
+function findFrameHoles(imgData, W, H, searchBounds) {
+  let src, gray, workGray, bin, contours, hierarchy;
+  let roi = null;
+  const result = { ok: false };
+  try {
+    src = cv.matFromImageData(imgData);
+    gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-function computeAdaptiveDarkThreshold(imgData) {
-  const data = imgData.data;
-  let total = 0, count = 0;
-  for (let i = 0; i < data.length; i += 4 * 7) {
-    total += data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-    count++;
-  }
-  const avgLum = count > 0 ? total / count : 128;
-  return avgLum * DARK_THRESHOLD_RATIO;
-}
-function isDark(lum, threshold) { return lum < threshold; }
-
-function isIsolatedOnBackground(data, W, H, minX, maxX, minY, maxY, threshold) {
-  const haloR = 5;
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  const rx = (maxX - minX) / 2 + haloR, ry = (maxY - minY) / 2 + haloR;
-  const SAMPLES = 12;
-  let lightCount = 0, total = 0;
-  for (let i = 0; i < SAMPLES; i++) {
-    const ang = (i / SAMPLES) * Math.PI * 2;
-    const px = Math.round(cx + Math.cos(ang) * rx);
-    const py = Math.round(cy + Math.sin(ang) * ry);
-    if (px < 0 || px >= W || py < 0 || py >= H) continue;
-    const idx = (py * W + px) * 4;
-    const l = data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114;
-    total++;
-    if (!isDark(l, threshold)) lightCount++;
-  }
-  return total > 0 && (lightCount / total) >= 0.6;
-}
-
-function findDarkBlobs(imgData, W, H, step, threshold, searchBounds) {
-  const data = imgData.data;
-  const visited = new Uint8Array(W * H);
-  const qx = new Int32Array(FLOOD_CAP);
-  const qy = new Int32Array(FLOOD_CAP);
-  const blobs = [];
-  let rejectedCapped = 0, rejectedTooBig = 0, rejectedShape = 0;
-
-  const x0 = searchBounds ? Math.max(0, Math.round(searchBounds.minX)) : 0;
-  const x1 = searchBounds ? Math.min(W, Math.round(searchBounds.maxX)) : W;
-  const y0 = searchBounds ? Math.max(0, Math.round(searchBounds.minY)) : 0;
-  const y1 = searchBounds ? Math.min(H, Math.round(searchBounds.maxY)) : H;
-
-  function lumAt(x, y) {
-    const i = (y * W + x) * 4;
-    return data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-  }
-
-  for (let y = y0; y < y1; y += step) {
-    for (let x = x0; x < x1; x += step) {
-      if (visited[y * W + x]) continue;
-      if (!isDark(lumAt(x, y), threshold)) continue;
-      qx[0] = x; qy[0] = y;
-      let head = 0, tail = 1;
-      let sx = 0, sy = 0, cnt = 0;
-      let minX = x, maxX = x, minY = y, maxY = y;
-      visited[y * W + x] = 1;
-      while (head < tail && cnt < FLOOD_CAP) {
-        const cx = qx[head], cy = qy[head]; head++;
-        sx += cx; sy += cy; cnt++;
-        if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
-        if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
-        const neighbors = [[cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1]];
-        for (const [nx, ny] of neighbors) {
-          if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
-          if (visited[ny * W + nx]) continue;
-          if (!isDark(lumAt(nx, ny), threshold)) continue;
-          visited[ny * W + nx] = 1;
-          if (tail < FLOOD_CAP) { qx[tail] = nx; qy[tail] = ny; tail++; }
-        }
+    workGray = gray;
+    if (searchBounds) {
+      const x = Math.max(0, Math.round(searchBounds.minX));
+      const y = Math.max(0, Math.round(searchBounds.minY));
+      const w = Math.min(W, Math.round(searchBounds.maxX)) - x;
+      const h = Math.min(H, Math.round(searchBounds.maxY)) - y;
+      if (w > 8 && h > 8) {
+        roi = new cv.Rect(x, y, w, h);
+        workGray = gray.roi(roi);
       }
-      if (cnt < MIN_BLOB_SIZE) continue;
-      // впёрлися в межу флуд-філу — справжній розмір невідомий, майже
-      // напевно велика безформна пляма (тінь/одяг/край кадру), а не
-      // компактний якір; ЯВНО відхиляємо, а не порівнюємо з MAX_BLOB_SIZE
-      if (cnt >= FLOOD_CAP) { rejectedCapped++; continue; }
-      if (cnt > MAX_BLOB_SIZE) { rejectedTooBig++; continue; }
-
-      const bboxW = maxX - minX + 1, bboxH = maxY - minY + 1;
-      const aspect = Math.max(bboxW, bboxH) / Math.max(1, Math.min(bboxW, bboxH));
-      if (aspect > MAX_BLOB_ASPECT) { rejectedShape++; continue; }
-      const fillRatio = cnt / (bboxW * bboxH);
-      if (fillRatio < MIN_FILL_RATIO || fillRatio > MAX_FILL_RATIO) { rejectedShape++; continue; }
-
-      if (!isIsolatedOnBackground(data, W, H, minX, maxX, minY, maxY, threshold)) continue;
-      blobs.push({ x: sx / cnt, y: sy / cnt, size: cnt });
     }
+
+    bin = new cv.Mat();
+    const blockSize = Math.max(11, Math.min(51, oddify(Math.round(Math.min(workGray.cols, workGray.rows) / 10))));
+    cv.adaptiveThreshold(workGray, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, blockSize, ADAPTIVE_C);
+
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+    cv.findContours(bin, contours, hierarchy, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE);
+
+    const offX = roi ? roi.x : 0;
+    const offY = roi ? roi.y : 0;
+    const n = contours.size();
+    const hData = hierarchy.data32S;
+
+    // найбільший контур кадру — кандидат на "каркас" (Х-лінія+4 маяки)
+    let bestIdx = -1, bestArea = MIN_FRAME_AREA;
+    for (let i = 0; i < n; i++) {
+      const c = contours.get(i);
+      const area = cv.contourArea(c);
+      c.delete();
+      if (area > bestArea) { bestArea = area; bestIdx = i; }
+    }
+    if (bestIdx === -1) {
+      result.reason = `великого контуру-каркасу не знайдено (плям у кадрі: ${n})`;
+      return result;
+    }
+
+    // прямі діти найбільшого контуру в ієрархії — це дірки-маяки
+    const holes = [];
+    for (let i = 0; i < n; i++) {
+      if (hData[i * 4 + 3] !== bestIdx) continue;
+      const c = contours.get(i);
+      const area = cv.contourArea(c);
+      const rect = cv.boundingRect(c);
+      c.delete();
+      if (area < MIN_HOLE_AREA || area > MAX_HOLE_AREA) continue;
+      const bboxArea = rect.width * rect.height;
+      if (bboxArea <= 0) continue;
+      const aspect = Math.max(rect.width, rect.height) / Math.max(1, Math.min(rect.width, rect.height));
+      if (aspect > HOLE_ASPECT_MAX) continue;
+      const fillRatio = area / bboxArea;
+      if (fillRatio < HOLE_FILL_RATIO_MIN || fillRatio > HOLE_FILL_RATIO_MAX) continue;
+      holes.push({ x: offX + rect.x + rect.width / 2, y: offY + rect.y + rect.height / 2, size: area });
+    }
+
+    if (holes.length < 4) {
+      result.reason = `каркас знайдено, дірок-маяків лише ${holes.length} (треба 4)`;
+      result.holeCount = holes.length;
+      return result;
+    }
+
+    holes.sort((a, b) => b.size - a.size);
+    const top4 = holes.slice(0, 4);
+    result.ok = true;
+    result.points = sortByAngleAroundCentroid(top4);
+    result.holeCount = holes.length;
+  } finally {
+    if (roi && workGray) workGray.delete();
+    if (src) src.delete();
+    if (gray) gray.delete();
+    if (bin) bin.delete();
+    if (contours) contours.delete();
+    if (hierarchy) hierarchy.delete();
   }
-  if (rejectedCapped || rejectedTooBig || rejectedShape) {
-    log(`Блоб-фільтр: відхилено ${rejectedCapped} "безмежних", ${rejectedTooBig} завеликих, ${rejectedShape} неокруглих плям.`);
-  }
-  return blobs;
+  return result;
 }
 
 /* Сортує 4 точки за кутом навколо їхнього спільного центроїда — дає
-   консистентний циклічний порядок обходу (за годинниковою стрілкою в
-   canvas-системі, y вниз), який далі зіставляється з тим самим порядком
-   TL->TR->BR->BL у getLocalCorners. */
+   консистентний циклічний порядок обходу. Стартова точка серед цих
+   чотирьох НЕВІДОМА (усі 4 маяки однакові!) — detectAndDecode
+   перебирає всі 4 зсуви циклічного старту, шукаючи, де SYNC_BITS
+   збігається. */
 function sortByAngleAroundCentroid(pts) {
   const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
   const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
   return pts.slice().sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
 }
 
-function sampleFromHomography(imgData, W, H, Q, quadMap, transform) {
-  const data = imgData.data;
-  function lumAt(x, y) {
-    x = Math.round(x); y = Math.round(y);
-    if (x < 0 || x >= W || y < 0 || y >= H) return 255;
-    const i = (y * W + x) * 4;
-    return data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
+function computeAgreement(quadResults, capacity) {
+  let sumAgree = 0;
+  for (let i = 0; i < capacity; i++) {
+    let ones = 0;
+    for (let q = 0; q < 4; q++) ones += quadResults[q][i];
+    sumAgree += Math.max(ones, 4 - ones);
   }
-  const squareSize = 2 * Q * CELL;
-
-  const sampledLums = [];
-  for (let qy = 0; qy < 2; qy++) for (let qx = 0; qx < 2; qx++)
-    for (let ry = 0; ry < Q; ry++) for (let rx = 0; rx < Q; rx++) {
-      const lx = qx * Q * CELL + rx * CELL + CELL/2;
-      const ly = qy * Q * CELL + ry * CELL + CELL/2;
-      const p = applyHomography(transform, lx, ly);
-      sampledLums.push(lumAt(p.x, p.y));
-    }
-  let minL = 255, maxL = 0;
-  for (const l of sampledLums) { if (l < minL) minL = l; if (l > maxL) maxL = l; }
-  const threshold = (minL + maxL) / 2;
-
-  // сирі покази ПО ФІЗИЧНІЙ позиції квадранта (не по qIdx!) — бо тепер
-  // саме фізична позиція (не поворот) визначає, до якого блоку (A/B)
-  // належить квадрант
-  const perPos = {};
-  for (let qy = 0; qy < 2; qy++) {
-    for (let qx = 0; qx < 2; qx++) {
-      const qIdx = quadMap[qx + ',' + qy];
-      const bitsArr = new Array(Q * Q).fill(0);
-      const confArr = new Array(Q * Q).fill(0);
-      for (let ry = 0; ry < Q; ry++) {
-        for (let rx = 0; rx < Q; rx++) {
-          const lx = qx * Q * CELL + rx * CELL + CELL/2;
-          const ly = qy * Q * CELL + ry * CELL + CELL/2;
-          const p = applyHomography(transform, lx, ly);
-          const l = lumAt(p.x, p.y);
-          const bit = l < threshold ? 1 : 0;
-          const base = rotateIndex(rx, ry, Q, qIdx);
-          const idx = base.y * Q + base.x;
-          bitsArr[idx] = bit;
-          confArr[idx] = Math.abs(l - threshold); // впевненість: чим далі від порогу, тим надійніше
-        }
-      }
-      perPos[qx + ',' + qy] = { bits: bitsArr, conf: confArr };
-    }
-  }
-
-  /* Об'єднує 2 незалежні покази однієї й тієї самої клітинки (діагональна
-     пара): якщо збігаються — беремо як є; якщо розійшлись — довіряємо
-     тому, чия яскравість далі від порогу (впевненіше зчитування), той
-     самий принцип, що й для розбіжності дзеркальних пар у кільцевому
-     шифрі. Заразом рахує agreement (частку клітинок, де пара збіглась)
-     — це і є метрика "наскільки добре ця геометрія узгоджена". */
-  function mergePair(p1, p2, capacity) {
-    const merged = new Array(capacity).fill(0);
-    let agreeCount = 0;
-    for (let i = 0; i < capacity; i++) {
-      if (p1.bits[i] === p2.bits[i]) {
-        merged[i] = p1.bits[i];
-        agreeCount++;
-      } else {
-        merged[i] = (p1.conf[i] >= p2.conf[i]) ? p1.bits[i] : p2.bits[i];
-      }
-    }
-    return { merged, agreement: agreeCount / capacity };
-  }
-
-  const capacity = Q * Q;
-  const A = mergePair(perPos['0,0'], perPos['1,1'], capacity); // TL + BR
-  const B = mergePair(perPos['1,0'], perPos['0,1'], capacity); // TR + BL
-  const overallAgreement = (A.agreement + B.agreement) / 2;
-
-  return {
-    blockA: A.merged, blockB: B.merged,
-    agreementA: A.agreement, agreementB: B.agreement,
-    agreement: overallAgreement,
-    threshold,
-    // для дебаг-відображення (панель результатів) — сирі покази обох
-    // фізичних квадрантів кожної діагоналі
-    rawTL: perPos['0,0'].bits, rawTR: perPos['1,0'].bits, rawBL: perPos['0,1'].bits, rawBR: perPos['1,1'].bits
-  };
+  return sumAgree / (capacity * 4);
 }
 
-/* ЕТАП ЯКОРЯ: знаходимо 4 найбільші темні плями (кружечки), сортуємо їх
-   циклічно, і пробуємо ВСІ 8 гіпотез відповідності — 4 зсуви початкової
-   точки (яка з 4 знайдених приймається за TL) У ДВОХ напрямках обходу
-   (за годинниковою і проти) на випадок, якщо припущення про напрямок
-   обходу (сортування за кутом) не збіглось з фізичною реальністю. Для
-   кожної гіпотези рахуємо гомографію і одразу — узгодженість секторів
-   даних (computeAgreement): правильна відповідність дає малоспотворену
-   гомографію і майже повну згоду секторів; неправильна — спотворює
-   внутрішню геометрію і сектори "розсипаються" в шум. Той самий принцип
-   "спробуй кілька гіпотез, вір найузгодженішій", що вже використовується
-   для quadMap-повороту в 90°, тепер працює і для самої відповідності
-   кутів — і використовує ту саму функцію computeAgreement, без дублю. */
-function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
-
-/* Сортує 4 точки за кутом навколо центроїда і перевіряє, що вони дійсно
-   утворюють ОПУКЛИЙ чотирикутник (жодна точка не всередині трикутника
-   інших трьох) — той самий принцип "форма спершу, дані потім", що вже
-   працює для трикутника в кулачковому диску. Якщо опуклості нема —
-   повертає null: ці 4 точки НЕ можуть бути кутами реального якоря. */
-function cyclicOrderIfConvex(pts) {
-  const ordered = sortByAngleAroundCentroid(pts);
-  let sign = 0;
-  for (let i = 0; i < 4; i++) {
-    const a = ordered[i], b = ordered[(i + 1) % 4], c = ordered[(i + 2) % 4];
-    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
-    const s = cross > 0 ? 1 : (cross < 0 ? -1 : 0);
-    if (s === 0) return null;
-    if (sign === 0) sign = s;
-    else if (s !== sign) return null;
+/* Перевірка орієнтаційного префікса: якщо перші SYNC_BITS.length
+   позицій ЛОГІЧНОГО order (мажоритарно, по 4 квадрантах) збігаються з
+   очікуваним патерном — це та сама ознака "почав звідси правильно",
+   яку раніше давала форма кола-маркера. */
+function checkSync(quadResults, order) {
+  for (let i = 0; i < SYNC_BITS.length; i++) {
+    const pos = order[i];
+    let ones = 0;
+    for (let q = 0; q < 4; q++) ones += quadResults[q][pos];
+    const bit = ones >= 2 ? 1 : 0;
+    if (bit !== SYNC_BITS[i]) return false;
   }
-  return ordered;
-}
-
-/* Перевіряє сумірність сторін і правдоподібний розмір — аналог score<0.22
-   для трикутника диска, тільки з допуском під перспективу (справжній
-   квадрат під нахилом камери стає трапецією — сторони НЕ рівні, але й не
-   можуть відрізнятись у рази). MAX_SIDE_RATIO навмисно щедріший, ніж у
-   диска, бо квадрат більший і перспектива на нього діє сильніше. */
-const MAX_SIDE_RATIO = 2.6;
-const MIN_QUAD_DIAG_PX = 50;
-
-function quadShapeOk(ordered, maxDiagPx) {
-  const sides = [dist(ordered[0],ordered[1]), dist(ordered[1],ordered[2]), dist(ordered[2],ordered[3]), dist(ordered[3],ordered[0])];
-  const maxSide = Math.max(...sides), minSide = Math.min(...sides);
-  if (minSide < 8) return false; // вироджений майже-відрізок
-  if (maxSide / minSide > MAX_SIDE_RATIO) return false;
-  const avgDiag = (dist(ordered[0],ordered[2]) + dist(ordered[1],ordered[3])) / 2;
-  if (avgDiag < MIN_QUAD_DIAG_PX || avgDiag > maxDiagPx) return false;
   return true;
 }
 
-/* Перебирає ВСІ четвірки серед пулу кандидатів (не тільки "топ-4 за
-   розміром") — так само, як диск перебирає всі трійки серед топ-9 плям.
-   Кожна четвірка спершу проходить дешеву геометричну перевірку форми
-   (опуклість + сторони + розмір), і лише ті, що пройшли, йдуть далі на
-   (набагато дорожчу) гомографію + перевірку узгодженості бітів. */
-function findPlausibleQuads(candidates, maxDiagPx) {
-  const n = candidates.length;
-  const quads = [];
-  for (let i0 = 0; i0 < n; i0++)
-    for (let i1 = i0 + 1; i1 < n; i1++)
-      for (let i2 = i1 + 1; i2 < n; i2++)
-        for (let i3 = i2 + 1; i3 < n; i3++) {
-          const pts = [candidates[i0], candidates[i1], candidates[i2], candidates[i3]];
-          const ordered = cyclicOrderIfConvex(pts);
-          if (!ordered) continue;
-          if (!quadShapeOk(ordered, maxDiagPx)) continue;
-          quads.push(ordered);
+/* ================================================================
+   ЗЧИТУВАННЯ ДАНИХ: cv.warpPerspective + cv.adaptiveThreshold замість
+   ручної гомографії з калібруванням по двох точках. warpPerspective
+   переносить весь шматок кадру (де знайдено якорі) у КАНОНІЧНИЙ простір
+   локальних координат схеми одним викликом, а adaptiveThreshold після
+   цього застосовує ЛОКАЛЬНИЙ поріг у кожній точці окремо — це набагато
+   стійкіше за єдиний глобальний поріг (навіть відкалібрований по фону/
+   якорю), бо враховує нерівномірність освітлення/відблиски В МЕЖАХ
+   самого патерну, а не тільки різницю між двома точками.
+
+   Локальні координати схеми (getLocalCorners) містять від'ємні значення
+   (якорі виступають за межі даних), тож зсуваємо все на "off", щоб
+   вихідний канонічний канвас мав лише додатні пікселі: локальний TL
+   (-off,-off) → (0,0) канонічного зображення.
+   ================================================================ */
+function sampleDataCv(imgData, W, H, Q, quadMap, dstCyclic, corners) {
+  let src, gray, warped, thresh, trans, srcPts, dstPtsMat;
+  const squareSize = 2 * Q * CELL;
+  const gap = CELL, off = gap + CELL / 2;
+  const canvasSize = Math.round(squareSize + 2 * off);
+  const results = [[], [], [], []];
+  try {
+    src = cv.matFromImageData(imgData);
+    gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      dstCyclic[0].x, dstCyclic[0].y, dstCyclic[1].x, dstCyclic[1].y,
+      dstCyclic[2].x, dstCyclic[2].y, dstCyclic[3].x, dstCyclic[3].y
+    ]);
+    dstPtsMat = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      corners.TL.x + off, corners.TL.y + off, corners.TR.x + off, corners.TR.y + off,
+      corners.BR.x + off, corners.BR.y + off, corners.BL.x + off, corners.BL.y + off
+    ]);
+    trans = cv.getPerspectiveTransform(srcPts, dstPtsMat);
+    warped = new cv.Mat();
+    cv.warpPerspective(gray, warped, trans, new cv.Size(canvasSize, canvasSize));
+
+    thresh = new cv.Mat();
+    const blockSize = Math.max(9, oddify(Math.round(CELL * 1.4)));
+    cv.adaptiveThreshold(warped, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, blockSize, ADAPTIVE_C);
+
+    for (let qy = 0; qy < 2; qy++) {
+      for (let qx = 0; qx < 2; qx++) {
+        const qIdx = quadMap[qx + ',' + qy];
+        const bitsForQuad = new Array(Q * Q).fill(0);
+        for (let ry = 0; ry < Q; ry++) {
+          for (let rx = 0; rx < Q; rx++) {
+            const lx = Math.round(qx * Q * CELL + rx * CELL + CELL / 2 + off);
+            const ly = Math.round(qy * Q * CELL + ry * CELL + CELL / 2 + off);
+            let bit = 0;
+            if (lx >= 0 && lx < canvasSize && ly >= 0 && ly < canvasSize) {
+              bit = thresh.ucharPtr(ly, lx)[0] > 128 ? 1 : 0;
+            }
+            const base = rotateIndex(rx, ry, Q, qIdx);
+            bitsForQuad[base.y * Q + base.x] = bit;
+          }
         }
-  return quads;
+        results[qIdx] = bitsForQuad;
+      }
+    }
+  } finally {
+    if (src) src.delete();
+    if (gray) gray.delete();
+    if (warped) warped.delete();
+    if (thresh) thresh.delete();
+    if (trans) trans.delete();
+    if (srcPts) srcPts.delete();
+    if (dstPtsMat) dstPtsMat.delete();
+  }
+  return { results };
 }
 
-const CANDIDATE_POOL_SIZE = 10; // топ-N плям за розміром, серед яких перебираємо четвірки (як топ-9 у диска для трійок)
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
-function detectAndDecode(imgData, W, H, Q, quadMap) {
-  const threshold = computeAdaptiveDarkThreshold(imgData);
-  const blobs = findDarkBlobs(imgData, W, H, 3, threshold, trackedBounds);
+const MAX_CENTER_DEVIATION_FRAC = 0.42; // та сама частка кадру, що й пунктирна рамка #centerGuide
 
-  if (blobs.length < 4) {
+function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity, activeCount) {
+  const found = findFrameHoles(imgData, W, H, trackedBounds);
+
+  if (!found.ok) {
     trackingMiss();
-    return { ok: false, reason: `замало плям (${blobs.length}, треба 4)${trackedBounds ? ' [звужена зона]' : ''}`, blobCount: blobs.length };
+    return { ok: false, reason: found.reason || 'маяки не знайдено', blobCount: found.holeCount || 0 };
   }
 
-  blobs.sort((a, b) => b.size - a.size);
-  const candidates = blobs.slice(0, Math.min(CANDIDATE_POOL_SIZE, blobs.length));
-  const maxDiagPx = Math.min(W, H) * 0.98;
-
-  const quads = findPlausibleQuads(candidates, maxDiagPx);
-  if (quads.length === 0) {
+  const pts = found.points; // 4 точки, циклічний порядок, стартова точка серед них ще невідома
+  const cx4 = (pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4;
+  const cy4 = (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4;
+  const maxCenterDeviationPx = Math.min(W, H) * MAX_CENTER_DEVIATION_FRAC;
+  if (Math.hypot(cx4 - W / 2, cy4 - H / 2) > maxCenterDeviationPx) {
     trackingMiss();
-    return { ok: false, reason: `${candidates.length} кандидатів, жоден не схожий на квадрат`, blobCount: blobs.length };
+    return { ok: false, reason: 'каркас знайдено, але задалеко від центру кадру', blobCount: found.holeCount };
   }
 
   const corners = getLocalCorners(Q);
   const srcCyclic = [corners.TL, corners.TR, corners.BR, corners.BL];
 
+  /* Усі 4 маяки тепер ОДНАКОВІ (квітка 3×3, жодної відмінної форми) —
+     на відміну від попередньої версії з колом-орієнтиром, тут
+     невідомі і СТАРТ (яка з 4 точок — TL), і НАПРЯМОК обходу (фото
+     може бути дзеркальним). Тому перебираємо всі 4 зсуви × 2 напрямки
+     = 8 гіпотез. Головний критерій вибору — SYNC_BITS: короткий
+     фіксований префікс, зчитаний мажоритарно по 4 квадрантах, мусить
+     збігтись із очікуваним патерном. Серед гіпотез, де він збігається,
+     обираємо найкращу узгодженість; якщо жодна не збіглась (наприклад,
+     дуже шумний кадр) — резервно беремо найкращу узгодженість без
+     підтвердженого синхро, це позначається syncOk=false. */
   let best = null;
-  for (const ordered of quads) {
-    const orderedRev = ordered.slice().reverse();
-    for (const dstBase of [ordered, orderedRev]) {
-      for (let k = 0; k < 4; k++) {
-        const dstCyclic = [dstBase[k % 4], dstBase[(k+1) % 4], dstBase[(k+2) % 4], dstBase[(k+3) % 4]];
-        const transform = solveHomography(srcCyclic, dstCyclic);
-        const sampled = sampleFromHomography(imgData, W, H, Q, quadMap, transform);
-        const agreement = sampled.agreement;
-        if (!best || agreement > best.agreement) best = { transform, agreement, sampled, k, dstCyclic };
-      }
+  for (const variant of [pts, pts.slice().reverse()]) {
+    for (let shift = 0; shift < 4; shift++) {
+      const dstCyclic = [0, 1, 2, 3].map(i => variant[(i + shift) % 4]);
+      const sampled = sampleDataCv(imgData, W, H, Q, quadMap, dstCyclic, corners);
+      const agreement = computeAgreement(sampled.results, capacity);
+      const syncOk = checkSync(sampled.results, order);
+      const score = (syncOk ? 1000 : 0) + agreement;
+      if (!best || score > best.score) best = { score, agreement, syncOk, sampled, dstCyclic };
     }
   }
 
   const bestSides = [dist(best.dstCyclic[0],best.dstCyclic[1]), dist(best.dstCyclic[1],best.dstCyclic[2]), dist(best.dstCyclic[2],best.dstCyclic[3]), dist(best.dstCyclic[3],best.dstCyclic[0])];
-  log(`Якір: плям=${blobs.length}${trackedBounds ? ' [звужена зона]' : ' [повний кадр]'}, кандидатів=${candidates.length}, правдоподібних чотирикутників=${quads.length}, сторони обраного=[${bestSides.map(s=>s.toFixed(0)).join(',')}], найкраща узгодженість=${(best.agreement*100).toFixed(1)}%.`);
+  log(`Каркас: дірок=${found.holeCount}${trackedBounds ? ' [звужена зона]' : ' [повний кадр]'}, сторони обраного=[${bestSides.map(s=>s.toFixed(0)).join(',')}], узгодженість=${(best.agreement*100).toFixed(1)}%, синхро=${best.syncOk ? 'OK' : 'ні'}.`);
+
+  if (!best.syncOk) {
+    trackingMiss();
+    return { ok: false, reason: `синхропрефікс не підтверджено (найкраща узгодженість ${(best.agreement*100).toFixed(0)}%)`, blobCount: found.holeCount };
+  }
 
   updateTrackedBounds(best.dstCyclic, W, H);
 
-  return { ok: true, blobCount: blobs.length, candidateCount: candidates.length, quadCount: quads.length, best, corners };
+  return { ok: true, blobCount: found.holeCount, best, corners };
 }
 
 // =====================================================================
@@ -811,17 +835,14 @@ let recentCentroids = [];
 let recentTexts = [];
 
 /* ================================================================
-   ТРЕКІНГ ЗОНИ ПОШУКУ: щойно якорі знайдені (навіть з посередньою
-   узгодженістю), наступний кадр шукає ТІЛЬКИ в невеликій зоні навколо
-   них — а не по всьому кадру заново. Це прибирає головну причину
-   "стрибання": без трекінгу кожен кадр наново змагається з усім, що є
-   в кімнаті (одяг, тінь, волосся), і будь-який темний об'єкт деінде в
-   кадрі має такий самий шанс потрапити в топ-4, як і справжній якір.
-   Звужена зона різко зменшує кількість "конкурентів" з інших частин
-   кадру. Якщо кілька кадрів поспіль у звуженій зоні нічого путнього не
-   знайдено — трекінг "здається" і повертається до пошуку по всьому
-   кадру (той самий принцип TRACKING_LOST_AFTER, що й у кулачковому
-   сканері). */
+   ТРЕКІНГ ЗОНИ ПОШУКУ: щойно якорі знайдені З ДОСТАТНЬОЮ УЗГОДЖЕНІСТЮ,
+   наступний кадр шукає ТІЛЬКИ в невеликій зоні навколо них — а не по
+   всьому кадру заново. ВАЖЛИВО: зона оновлюється лише коли
+   agreement >= MIN_AGREEMENT (перевірка винесена в scanFrame) — раніше
+   вона оновлювалась на БУДЬ-ЯКОМУ знайденому квадраті, навіть з
+   узгодженістю 60-70%, що могло звузити пошук навколо випадкового
+   шуму (одяг/тінь) і "заблокувати" сканер у неправильному місці на
+   кілька кадрів, поки TRACK_LOST_AFTER не спрацює. */
 let trackedBounds = null; // {minX,maxX,minY,maxY} або null (повний кадр)
 let trackedMissCount = 0;
 const TRACK_PADDING_FACTOR = 0.6; // запас навколо знайденої зони, як частка її розміру
@@ -871,6 +892,49 @@ function checkStability(centroid, text) {
 }
 
 // =====================================================================
+// OPENCV READY-ГЕЙТ — той самий патерн, що й у Round Code: доки WASM
+// runtime не готовий, кнопка камери заблокована, а попередній лог
+// (window.__preLog), зібраний ще до появи log(), скидається в textarea.
+// =====================================================================
+let openCvReady = false;
+
+function flushPreLoadLog() {
+  if (window.__preLog && window.__preLog.length) {
+    window.__preLog.forEach(m => log(m));
+    window.__preLog = [];
+  }
+}
+function onCvReady() {
+  openCvReady = true;
+  flushPreLoadLog();
+  log('OpenCV готовий (WASM runtime ініціалізовано).');
+  const btn = document.getElementById('camToggleBtn');
+  btn.disabled = false;
+  btn.textContent = 'Увімкнути камеру';
+  document.getElementById('camPlaceholder').textContent = 'Камеру ще не увімкнено';
+}
+function onCvLoadError() {
+  flushPreLoadLog();
+  log('OpenCV НЕ завантажився. Камера лишається заблокованою.');
+  document.getElementById('camStatus').textContent = 'OpenCV не завантажився — див. лог.';
+  document.getElementById('camPlaceholder').textContent = 'OpenCV не завантажився — див. лог';
+}
+window.__cvReadyCallback = onCvReady;
+window.__cvErrorCallback = onCvLoadError;
+if (window.__openCvLoadState === 'ready') {
+  onCvReady();
+} else if (window.__openCvLoadState === 'script-error' || window.__openCvLoadState === 'cv-undefined' || window.__openCvLoadState === 'promise-rejected') {
+  onCvLoadError();
+} else {
+  flushPreLoadLog();
+}
+setTimeout(() => {
+  if (!openCvReady) {
+    log(`Попередження: OpenCV досі не готовий через 12с (стан: ${window.__openCvLoadState}).`);
+  }
+}, 12000);
+
+// =====================================================================
 // КАМЕРА
 // =====================================================================
 let camStream = null;
@@ -878,6 +942,7 @@ let scanTimer = null;
 let locked = false;
 
 async function toggleCamera() {
+  if (!openCvReady) return;
   const btn = document.getElementById('camToggleBtn');
   if (camStream) { stopCamera(); btn.textContent = 'Увімкнути камеру'; return; }
   const status = document.getElementById('camStatus');
@@ -893,6 +958,7 @@ async function toggleCamera() {
     log(`Відео грає. ${video.videoWidth}x${video.videoHeight}`);
     document.getElementById('camPlaceholder').style.display = 'none';
     document.getElementById('camLive').classList.add('active');
+    document.getElementById('centerGuide').classList.add('active');
     status.textContent = 'Камера увімкнена — шукаю якорі...';
     btn.textContent = 'Вимкнути камеру';
     locked = false;
@@ -908,6 +974,7 @@ function stopCamera() {
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   document.getElementById('camVideo').srcObject = null;
   document.getElementById('camLive').classList.remove('active');
+  document.getElementById('centerGuide').classList.remove('active');
   document.getElementById('camPlaceholder').style.display = 'flex';
   document.getElementById('camStatus').textContent = 'Камеру вимкнено.';
   locked = false;
@@ -931,8 +998,15 @@ function drawLiveOverlay(W, H, det, statusText) {
     for (let i = 1; i < 4; i++) octx.lineTo(pts[i].x, pts[i].y);
     octx.closePath();
     octx.stroke();
+    // усі 4 маяки однакові — точку на позиції BR (індекс 2) лише злегка
+    // виділяємо розміром для наочності, орієнтацію насправді визначає
+    // SYNC_BITS, а не форма чи розмір самої точки
     octx.fillStyle = 'rgba(255,200,80,0.9)';
-    for (const p of pts) { octx.beginPath(); octx.arc(p.x, p.y, 5, 0, Math.PI*2); octx.fill(); }
+    for (let i = 0; i < pts.length; i++) {
+      octx.beginPath();
+      octx.arc(pts[i].x, pts[i].y, i === 2 ? 7 : 5, 0, Math.PI*2);
+      octx.fill();
+    }
   }
   document.getElementById('scanStatusOverlay').textContent = statusText || '';
 }
@@ -941,13 +1015,13 @@ function drawLiveOverlay(W, H, det, statusText) {
    ромба (через гомографію контуру 4 кутів — тепер справжня трапеція під
    перспективою, а не примусовий прямокутник) + червоні цятки на
    розпізнаних "1". Малюється ОДИН РАЗ, лишається до "Сканувати ще раз". */
-function drawDecodedOverlay(W, H, Q, quadMap, det) {
+function drawDecodedOverlay(W, H, det) {
   const oc = document.getElementById('overlayCanvas');
   oc.width = W; oc.height = H;
   const octx = oc.getContext('2d');
   octx.clearRect(0, 0, W, H);
 
-  const { transform, dstCyclic } = det.best;
+  const { dstCyclic } = det.best;
 
   // синя заливка — саме той чотирикутник (трапеція під перспективою),
   // що реально знайдений на фото, не ідеалізований прямокутник
@@ -961,33 +1035,14 @@ function drawDecodedOverlay(W, H, Q, quadMap, det) {
   octx.lineWidth = 2;
   octx.stroke();
 
-  // самі якорі — жовті кружечки поверх заливки, для наочності
+  // самі маяки — жовті кружечки поверх заливки; точка BR (індекс 2)
+  // трохи більша лише для наочності напряму обходу на екрані
   octx.fillStyle = 'rgba(255,200,80,0.95)';
-  for (const p of dstCyclic) { octx.beginPath(); octx.arc(p.x, p.y, 5, 0, Math.PI*2); octx.fill(); }
-
-  // червоні цятки на розпізнаних "1" — та сама гомографія, що й при
-  // семплінгу, тож лягають рівно на точки, які реально мірили. Малюємо
-  // СИРІ покази кожного фізичного квадранта (до об'єднання пари) —
-  // так видно, чи саме розійшлись між собою TL/BR чи TR/BL
-  const sampled = det.best.sampled;
-  const rawByPos = { '0,0': sampled.rawTL, '1,0': sampled.rawTR, '0,1': sampled.rawBL, '1,1': sampled.rawBR };
-  octx.fillStyle = 'rgba(230,40,40,0.55)';
-  const dotR = 4;
-  for (let qy = 0; qy < 2; qy++) {
-    for (let qx = 0; qx < 2; qx++) {
-      const qIdx = quadMap[qx + ',' + qy];
-      const bitsForQuad = rawByPos[qx + ',' + qy];
-      for (let ry = 0; ry < Q; ry++) {
-        for (let rx = 0; rx < Q; rx++) {
-          const base = rotateIndex(rx, ry, Q, qIdx);
-          if (!bitsForQuad[base.y * Q + base.x]) continue;
-          const lx = qx * Q * CELL + rx * CELL + CELL/2;
-          const ly = qy * Q * CELL + ry * CELL + CELL/2;
-          const p = applyHomography(transform, lx, ly);
-          octx.beginPath(); octx.arc(p.x, p.y, dotR, 0, Math.PI*2); octx.fill();
-        }
-      }
-    }
+  for (let i = 0; i < dstCyclic.length; i++) {
+    const p = dstCyclic[i];
+    octx.beginPath();
+    octx.arc(p.x, p.y, i === 2 ? 7 : 5, 0, Math.PI*2);
+    octx.fill();
   }
 }
 
@@ -1011,11 +1066,14 @@ function scanFrame() {
   }
   const imgData = ctx.getImageData(0, 0, size, size);
 
-  const quadMap = getQuadRotationMap();
   const phrase = document.getElementById('phraseInput').value;
-  const enc = prepareEncoding(phrase);
+  const Q = computeAutoQ(phrase);
+  const quadMap = getQuadRotationMap();
+  const { bits, charCount } = encodePhrase(phrase);
+  const order = buildProximityOrder(Q);
+  const { groundTruth, activeCount, capacity } = buildGroundTruth(Q, order, bits);
 
-  const det = detectAndDecode(imgData, size, size, enc.Q, quadMap);
+  const det = detectAndDecode(imgData, size, size, Q, quadMap, order, groundTruth, capacity, activeCount);
 
   if (!det.ok) {
     recentCentroids = []; recentTexts = [];
@@ -1023,76 +1081,82 @@ function scanFrame() {
     document.getElementById('camStatus').textContent = `Пошук: ${det.reason}`;
     return;
   }
+
   if (det.best.agreement < MIN_AGREEMENT) {
+    // якорі знайдені, але узгодженість слабка — НЕ довіряємо цій позиції
+    // для звуження зони пошуку (updateTrackedBounds всередині
+    // detectAndDecode уже й сам це враховує), скидаємо лише серію
+    // тексту для стабільності
     recentCentroids = []; recentTexts = [];
     drawLiveOverlay(size, size, det, `Якорі знайдено, узгодженість слабка (${(det.best.agreement*100).toFixed(0)}%)`);
     document.getElementById('camStatus').textContent = `Кандидат (плям=${det.blobCount}) — узгодженість ${(det.best.agreement*100).toFixed(0)}%, шукаю стабільніший кадр...`;
     return;
   }
 
-  function bitsToPhrase(arr, activeCount, order) {
+  function bitsToPhrase(arr) {
     const seq = [];
     for (let k = 0; k < activeCount; k++) seq.push(arr[order[k]]);
     let out = '';
     for (let i = 0; i + 5 < seq.length; i += 6) out += bitsToChar(seq.slice(i, i + 6));
     return out;
   }
-  const textA = bitsToPhrase(det.best.sampled.blockA, enc.activeCountA, enc.order);
-  const textB = bitsToPhrase(det.best.sampled.blockB, enc.activeCountB, enc.order);
-  const votedText = textA + textB;
+  const votedBits = new Array(capacity).fill(0);
+  for (let i = 0; i < capacity; i++) {
+    let sum = 0;
+    for (let q = 0; q < 4; q++) sum += det.best.sampled.results[q][i];
+    votedBits[i] = sum >= 2 ? 1 : 0;
+  }
+  const votedText = bitsToPhrase(votedBits);
   const centroid = centroidOf(det.best.dstCyclic);
   const stable = checkStability(centroid, votedText);
 
   drawLiveOverlay(size, size, det, stable ? 'Стабільно, декодую...' : `Стабілізація... (${recentCentroids.length}/${CONFIRM_STREAK})`);
   document.getElementById('camStatus').textContent = stable
     ? 'Впевнено знайдено — декодую.'
-    : `Кандидат (узгодженість A=${(det.best.sampled.agreementA*100).toFixed(0)}% B=${(det.best.sampled.agreementB*100).toFixed(0)}%) — стабілізація ${recentCentroids.length}/${CONFIRM_STREAK}`;
+    : `Кандидат (узгодженість ${(det.best.agreement*100).toFixed(0)}%) — стабілізація ${recentCentroids.length}/${CONFIRM_STREAK}`;
 
   if (stable) {
     locked = true;
-    log(`Зафіксовано: узгодженість A=${(det.best.sampled.agreementA*100).toFixed(1)}% B=${(det.best.sampled.agreementB*100).toFixed(1)}%, текст="${votedText}".`);
-    finishDecode(size, size, enc, quadMap, phrase, det, votedText);
+    log(`Зафіксовано: узгодженість=${(det.best.agreement*100).toFixed(1)}%, текст="${votedText}".`);
+    finishDecode(size, size, Q, quadMap, order, groundTruth, capacity, activeCount, phrase, det, votedBits, votedText);
   }
 }
 
-function finishDecode(W, H, enc, quadMap, phrase, det, votedText) {
+function finishDecode(W, H, Q, quadMap, order, groundTruth, capacity, activeCount, phrase, det, votedBits, votedText) {
   try {
-    drawDecodedOverlay(W, H, enc.Q, quadMap, det);
+    drawDecodedOverlay(W, H, det);
 
-    function bitsToPhrase(arr, activeCount, order) {
+    function bitsToPhrase(arr) {
       const seq = [];
       for (let k = 0; k < activeCount; k++) seq.push(arr[order[k]]);
       let out = '';
       for (let i = 0; i + 5 < seq.length; i += 6) out += bitsToChar(seq.slice(i, i + 6));
       return out;
     }
-    function accuracy(arr, activeCount, order, groundTruth) {
+    function accuracy(arr) {
       let correct = 0;
       for (let k = 0; k < activeCount; k++) { const g = order[k]; if (arr[g] === groundTruth[g]) correct++; }
       return activeCount === 0 ? 100 : Math.round((correct / activeCount) * 100);
     }
 
-    const accA = accuracy(det.best.sampled.blockA, enc.activeCountA, enc.order, enc.groundTruthA);
-    const accB = accuracy(det.best.sampled.blockB, enc.activeCountB, enc.order, enc.groundTruthB);
-    const textA = bitsToPhrase(det.best.sampled.blockA, enc.activeCountA, enc.order);
-    const textB = bitsToPhrase(det.best.sampled.blockB, enc.activeCountB, enc.order);
-
     let html = '';
-    html += `<div style="margin-bottom:8px;color:rgba(0,0,0,0.6)">Автознайдено (4 якорі + гомографія, 2 діагональні блоки) — очікувана фраза: "${escapeHtml(phrase)}" (Q=${enc.Q}, узгодженість A=${(det.best.sampled.agreementA*100).toFixed(1)}% B=${(det.best.sampled.agreementB*100).toFixed(1)}%)</div>`;
-    const clsA = accA === 100 ? 'ok' : (accA >= 85 ? '' : 'bad');
-    const clsB = accB === 100 ? 'ok' : (accB >= 85 ? '' : 'bad');
-    html += `<div class="quad-line"><span>Блок A — TL+BR (${accA}%)</span><span class="${clsA}">"${escapeHtml(textA)}"</span></div>`;
-    html += `<div class="quad-line"><span>Блок B — TR+BL (${accB}%)</span><span class="${clsB}">"${escapeHtml(textB)}"</span></div>`;
-    log(`Блок A: точність ${accA}%, текст="${textA}"`);
-    log(`Блок B: точність ${accB}%, текст="${textB}"`);
-    html += `<div class="final-result"><div class="label">Зібраний текст</div>"${escapeHtml(votedText)}"</div>`;
+    html += `<div style="margin-bottom:8px;color:rgba(255,255,255,0.6)">Автознайдено (маяки-квітки + Х-лінія) — очікувана фраза: "${escapeHtml(phrase)}" (узгодженість ${(det.best.agreement*100).toFixed(1)}%)</div>`;
+    for (let q = 0; q < 4; q++) {
+      const acc = accuracy(det.best.sampled.results[q]);
+      const text = bitsToPhrase(det.best.sampled.results[q]);
+      const cls = acc === 100 ? 'ok' : (acc >= 85 ? '' : 'bad');
+      html += `<div class="quad-line"><span>Сектор ${q + 1} (${acc}%)</span><span class="${cls}">"${escapeHtml(text)}"</span></div>`;
+      log(`Сектор ${q + 1}: точність ${acc}%, текст="${text}"`);
+    }
+    const votedAcc = accuracy(votedBits);
+    html += `<div class="final-result"><div class="label">Голосування більшості (${votedAcc}% точності)</div>"${escapeHtml(votedText)}"</div>`;
     html += `<button class="secondary" style="margin-top:10px" onclick="rescan()">Сканувати ще раз</button>`;
     document.getElementById('camResultsBox').innerHTML = html;
-    document.getElementById('camStatus').textContent = 'Декодовано. Синя зона, жовті якорі, червоні цятки — що бачив алгоритм.';
-    log(`Результат: текст="${votedText}". --- ЗАВЕРШЕНО ---`);
+    document.getElementById('camStatus').textContent = 'Декодовано. Синя зона й жовті маяки — що бачив алгоритм.';
+    log(`Голосування: точність=${votedAcc}%, текст="${votedText}". --- ЗАВЕРШЕНО ---`);
   } catch (e) {
     log(`ПОМИЛКА фіналізації: ${e.name}: ${e.message}`);
-    document.getElementById('camResultsBox').innerHTML = `<div style="color:#b52020">Помилка: ${escapeHtml(e.message)}</div>`;
+    document.getElementById('camResultsBox').innerHTML = `<div style="color:#ff8f8f">Помилка: ${escapeHtml(e.message)}</div>`;
     locked = false;
   }
 }
@@ -1116,17 +1180,13 @@ function copyLogFn() {
 function clearLogFn() { document.getElementById('logBox').value = ''; log('Лог очищено.'); }
 
 document.getElementById('phraseInput').addEventListener('input', generateSchema);
-['rotTL','rotTR','rotBL','rotBR'].forEach(id => {
-  document.getElementById(id).addEventListener('change', generateSchema);
-});
-document.getElementById('genSchemaBtn').addEventListener('click', generateSchema);
 document.getElementById('camToggleBtn').addEventListener('click', toggleCamera);
 document.getElementById('copyLogBtn').addEventListener('click', copyLogFn);
 document.getElementById('clearLogBtn').addEventListener('click', clearLogFn);
 
 updateCapacityNote();
 generateSchema();
-log('Ініціалізація завершена (4 кутові якорі + гомографія). Готово до тесту.');
+log('Ініціалізація завершена (маяки-квітки + Х-лінія). Готово до тесту.');
 </script>
 </body>
 </html>
