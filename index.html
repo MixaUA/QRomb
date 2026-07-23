@@ -1140,7 +1140,7 @@ function scanFrame() {
 
   function bitsToPhrase(arr) {
     const seq = [];
-    for (let k = 0; k < activeCount; k++) seq.push(arr[order[k]]);
+    for (let k = 0; k < activeCount; k++) seq.push(arr[order[SYNC_BITS.length + k]]);
     let out = '';
     for (let i = 0; i + 5 < seq.length; i += 6) out += bitsToChar(seq.slice(i, i + 6));
     return out;
@@ -1173,14 +1173,14 @@ function finishDecode(W, H, Q, quadMap, order, groundTruth, capacity, activeCoun
 
     function bitsToPhrase(arr) {
       const seq = [];
-      for (let k = 0; k < activeCount; k++) seq.push(arr[order[k]]);
+      for (let k = 0; k < activeCount; k++) seq.push(arr[order[SYNC_BITS.length + k]]);
       let out = '';
       for (let i = 0; i + 5 < seq.length; i += 6) out += bitsToChar(seq.slice(i, i + 6));
       return out;
     }
     function accuracy(arr) {
       let correct = 0;
-      for (let k = 0; k < activeCount; k++) { const g = order[k]; if (arr[g] === groundTruth[g]) correct++; }
+      for (let k = 0; k < activeCount; k++) { const g = order[SYNC_BITS.length + k]; if (arr[g] === groundTruth[g]) correct++; }
       return activeCount === 0 ? 100 : Math.round((correct / activeCount) * 100);
     }
 
