@@ -769,6 +769,43 @@ function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
 const MAX_CENTER_DEVIATION_FRAC = 0.42; // та сама частка кадру, що й пунктирна рамка #centerGuide
 
+/* Очікувані сторона й діагональ ідеального квадрата маяків у ЛОКАЛЬНИХ
+   координатах схеми — еталон пропорцій, з яким звіряємо РЕАЛЬНО
+   знайдені 4 точки, перш ніж довіряти їм. Без цієї перевірки
+   findFrameHoles міг би віддати 4 будь-які дірки найбільшого контуру
+   кадру (складки одягу, тканина, тіні) — навіть відверто нерівний
+   чотирикутник (сторони на кшталт [17,17,218,185]) проходив би далі,
+   бо ні AGREEMENT (узгодженість самих даних), ні 3-бітний SYNC_BITS
+   (з ~65% шансом випадкового збігу хоч на одній із 8 гіпотез) самі по
+   собі НЕ перевіряють форму — це геометрична, а не статистична
+   перевірка, і має спрацьовувати ПЕРШОЮ. */
+function computeExpectedSquareMetrics(Q) {
+  const c = getLocalCorners(Q);
+  return { side: dist(c.TL, c.TR), diag: dist(c.TL, c.BR) };
+}
+
+const MIN_QUAD_DIAG_PX = 50;
+const SQUARE_SHAPE_TOLERANCE = 0.35; // допуск на відхилення сторони від очікуваної (перспектива нахилу камери)
+
+function quadShapeOk(pts, maxDiagPx, expected) {
+  const diag1 = dist(pts[0], pts[2]);
+  const diag2 = dist(pts[1], pts[3]);
+  const avgDiag = (diag1 + diag2) / 2;
+  if (avgDiag < MIN_QUAD_DIAG_PX || avgDiag > maxDiagPx) return false;
+  // самі діагоналі теж мають бути близькі одна до одної (в ідеального
+  // квадрата вони рівні) — це і відсікає випадки типу [17,17,218,185],
+  // де через порожню "дірку" збоку виходить дуже витягнутий чотирикутник
+  if (Math.abs(diag1 - diag2) / avgDiag > SQUARE_SHAPE_TOLERANCE) return false;
+
+  const scale = avgDiag / expected.diag;
+  const expectedSide = expected.side * scale;
+  const sides = [dist(pts[0],pts[1]), dist(pts[1],pts[2]), dist(pts[2],pts[3]), dist(pts[3],pts[0])];
+  for (const s of sides) {
+    if (Math.abs(s - expectedSide) / expectedSide > SQUARE_SHAPE_TOLERANCE) return false;
+  }
+  return true;
+}
+
 function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity, activeCount) {
   const found = findFrameHoles(imgData, W, H, trackedBounds);
 
@@ -784,6 +821,14 @@ function detectAndDecode(imgData, W, H, Q, quadMap, order, groundTruth, capacity
   if (Math.hypot(cx4 - W / 2, cy4 - H / 2) > maxCenterDeviationPx) {
     trackingMiss();
     return { ok: false, reason: 'каркас знайдено, але задалеко від центру кадру', blobCount: found.holeCount };
+  }
+
+  const expected = computeExpectedSquareMetrics(Q);
+  const maxDiagPx = Math.min(W, H) * 0.98;
+  if (!quadShapeOk(pts, maxDiagPx, expected)) {
+    trackingMiss();
+    const sidesDbg = [dist(pts[0],pts[1]), dist(pts[1],pts[2]), dist(pts[2],pts[3]), dist(pts[3],pts[0])];
+    return { ok: false, reason: `4 дірки знайдено, але форма не схожа на квадрат [${sidesDbg.map(s=>s.toFixed(0)).join(',')}]`, blobCount: found.holeCount };
   }
 
   const corners = getLocalCorners(Q);
