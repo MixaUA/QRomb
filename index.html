@@ -4,7 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Ромб-вишиванка — OpenCV.js Сканер</title>
-<!-- Підключаємо OpenCV.js -->
+<!-- Підключаємо вашу кастомну збірку OpenCV.js. 
+     Якщо файл локальний, змініть шлях тут: -->
 <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();"></script>
 <style>
   * { box-sizing: border-box; }
@@ -53,7 +54,7 @@
 
 <div class="wrap">
   <h1>Ромб-вишиванка — OpenCV.js</h1>
-  <div class="subtitle">Геометріія через OpenCV (findContours + minAreaRect)</div>
+  <div class="subtitle">Геометріія через OpenCV (findContours + minAreaRect + JS boxPoints)</div>
 
   <div class="panel">
     <label>Фраза (укр. літери, пробіл, кома, крапка)</label>
@@ -85,7 +86,7 @@
 
   <div class="panel">
     <label>Камера</label>
-    <div class="warn-note">Авто-скан тепер використовує OpenCV.js для пошуку контурів та вирівнювання.</div>
+    <div class="warn-note">Авто-скан використовує OpenCV.js для пошуку контурів та вирівнювання (без cv.boxPoints).</div>
     <div class="cam-wrap" id="camWrap">
       <div class="cam-placeholder" id="camPlaceholder">Камеру ще не увімкнено</div>
       <div class="cam-live" id="camLive">
@@ -349,7 +350,7 @@ function drawGuide() {
 window.addEventListener('resize', drawGuide);
 
 // ================================================================
-// ЕТАП 2: ДАНІ (Зчитування бітів) - залишається без змін
+// ЕТАП 2: ДАНІ (Зчитування бітів)
 // ================================================================
 function sampleBitsWithTransform(data, W, H, Q, quadMap, toCanvasFn, sampleRadius) {
   function lumAvgAt(cx, cy) {
@@ -413,7 +414,6 @@ function computeAgreement(quadResults, capacity) {
 }
 
 const ANALYSIS_SIZE = 360;
-const autoScanTimer = null;
 const AUTO_SCAN_INTERVAL_MS = 900;
 const AUTO_MAX_ASPECT_DEV = 0.25;
 const AUTO_MIN_DIAG_PX = 60;
@@ -421,7 +421,38 @@ const AUTO_MAX_DIAG_PX = ANALYSIS_SIZE * 0.98;
 const AUTO_MIN_AGREEMENT = 0.82;
 
 // ================================================================
-// ЕТАП 1: ЯКІР (Геометріія) - ТЕПЕР ЧЕРЕЗ OPENCV.JS
+// ФУНКЦІЯ-ЗАМІННИК cv.boxPoints (Чистий JavaScript)
+// ================================================================
+function getBoxPoints(rotatedRect) {
+  const center = rotatedRect.center;
+  const size = rotatedRect.size;
+  const angle = rotatedRect.angle * Math.PI / 180.0;
+  
+  const cosA = Math.cos(angle);
+  const sinA = Math.sin(angle);
+  
+  const hw = size.width / 2;
+  const hh = size.height / 2;
+  
+  // Базові координати кутів відносно центру (до повороту)
+  const baseCorners = [
+    { x: -hw, y: -hh },
+    { x:  hw, y: -hh },
+    { x:  hw, y:  hh },
+    { x: -hw, y:  hh }
+  ];
+  
+  // Обертаємо їх на кут прямокутника та зміщуємо відносно центру
+  return baseCorners.map(pt => {
+    return {
+      x: center.x + pt.x * cosA - pt.y * sinA,
+      y: center.y + pt.x * sinA + pt.y * cosA
+    };
+  });
+}
+
+// ================================================================
+// ЕТАП 1: ЯКІР (Геометріія) - ЧЕРЕЗ OPENCV.JS
 // ================================================================
 function autoDetectAndDecode() {
   if (!cvReady) {
@@ -471,17 +502,16 @@ function autoDetectAndDecode() {
       return;
     }
 
-    // 3. Мінімальний обертовий прямокутник (замість rotating calipers)
+    // 3. Мінімальний обертовий прямокутник
     let cnt = contours.get(maxIdx);
     let rotatedRect = cv.minAreaRect(cnt);
-    let box = cv.boxPoints(rotatedRect); // 4 кути прямокутника
     
     let center = { x: rotatedRect.center.x, y: rotatedRect.center.y };
     let w = rotatedRect.size.width;
     let h = rotatedRect.size.height;
     
     // Звільняємо пам'ять WebAssembly (КРИТИЧНО для OpenCV.js)
-    src.delete(); gray.delete(); binary.delete(); contours.delete(); hierarchy.delete(); cnt.delete(); box.delete();
+    src.delete(); gray.delete(); binary.delete(); contours.delete(); hierarchy.delete(); cnt.delete();
 
     let aspect = Math.max(w, h) / Math.max(1, Math.min(w, h));
     log(`OpenCV Якір: w=${w.toFixed(1)} h=${h.toFixed(1)} aspect=${aspect.toFixed(3)}`);
@@ -498,14 +528,8 @@ function autoDetectAndDecode() {
       return;
     }
 
-    // Отримуємо 4 кути у звичний формат
-    // box.data містить [x1,y1, x2,y2, x3,y3, x4,y4]
-    let corners = [
-      { x: box.data[0], y: box.data[1] },
-      { x: box.data[2], y: box.data[3] },
-      { x: box.data[4], y: box.data[5] },
-      { x: box.data[6], y: box.data[7] }
-    ];
+    // Отримуємо 4 кути через нашу кастомну JS-функцію
+    let corners = getBoxPoints(rotatedRect);
 
     log('Якір: ПРИЙНЯТО (OpenCV). Перехід до Етапу 2 (дані).');
 
